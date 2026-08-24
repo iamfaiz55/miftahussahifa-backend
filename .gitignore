@@ -1,0 +1,7 @@
+node_modules
+.env
+uploadsnode_modules/
+.wwebjs_auth/
+__MACOSX/
+*.log
+.env
