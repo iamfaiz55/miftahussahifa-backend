@@ -1,0 +1,47 @@
+name: Deploy to Dedicated Server
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to SSH Server
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy using SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            echo "🚀 Navigating to application directory..."
+            # Adjust folder name if needed
+            cd ~/api.miftahussahifa.factoz.in || cd /home/${{ secrets.SSH_USER }}/api.miftahussahifa.factoz.in || cd api.miftahussahifa.factoz.in
+
+            echo "📦 Pulling latest changes from GitHub..."
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "📥 Installing dependencies..."
+            npm install --production
+
+            echo "🔄 Restarting application..."
+            # Check if PM2 is running the process
+            if command -v pm2 > /dev/null 2>&1; then
+              pm2 reload all || pm2 restart all || echo "PM2 restart triggered"
+            fi
+
+            # Check if cPanel Passenger tmp/restart.txt exists or directory exists
+            if [ -d "tmp" ]; then
+              touch tmp/restart.txt
+            else
+              mkdir -p tmp && touch tmp/restart.txt
+            fi
+
+            echo "✅ Deployment completed successfully!"
