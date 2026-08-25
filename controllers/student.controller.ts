@@ -727,33 +727,37 @@ export const getStudentPortalDetails = async (req: Request, res: Response): Prom
     };
 
     if (primaryBatch) {
-      // Count actual class sessions conducted for this batch
-      totalSessionsConducted = await ClassSession.count({
+      const scheduleDays: string[] = Array.isArray(primaryBatch.schedule_days) ? primaryBatch.schedule_days : [];
+
+      // Calculate actual scheduled calendar classes from start_date to today
+      let calendarClassesCount = 0;
+
+      if (primaryBatch.start_date && scheduleDays.length > 0) {
+        const start = new Date(primaryBatch.start_date);
+        const today = new Date();
+        const curr = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+        const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
+        const dayCodeMap = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+
+        while (curr <= end) {
+          const code = dayCodeMap[curr.getDay()];
+          if (scheduleDays.includes(code)) {
+            calendarClassesCount++;
+          }
+          curr.setDate(curr.getDate() + 1);
+        }
+      }
+
+      // Count actual class session rows in database
+      const dbSessionsCount = await ClassSession.count({
         where: { batch_id: primaryBatch.id },
       });
 
-      // Calculate timeline progress based on start_date and end_date if present
-      if (primaryBatch.start_date) {
-        const start = new Date(primaryBatch.start_date);
-        const end = primaryBatch.end_date ? new Date(primaryBatch.end_date) : new Date(start.getTime() + 90 * 24 * 60 * 60 * 1000);
-        const now = new Date();
-
-        const totalDurationMs = Math.max(1, end.getTime() - start.getTime());
-        const elapsedMs = Math.max(0, Math.min(now.getTime() - start.getTime(), totalDurationMs));
-
-        totalEstimatedDays = Math.ceil(totalDurationMs / (1000 * 60 * 60 * 24));
-        batchDaysCompleted = Math.ceil(elapsedMs / (1000 * 60 * 60 * 24));
-        batchDaysRemaining = Math.max(0, totalEstimatedDays - batchDaysCompleted);
-        batchProgressPercent = Math.round((batchDaysCompleted / totalEstimatedDays) * 100);
-      } else {
-        batchDaysCompleted = totalSessionsConducted;
-        totalEstimatedDays = Math.max(30, totalSessionsConducted + 15);
-        batchDaysRemaining = Math.max(0, totalEstimatedDays - batchDaysCompleted);
-        batchProgressPercent = Math.round((batchDaysCompleted / totalEstimatedDays) * 100);
-      }
+      totalSessionsConducted = Math.max(calendarClassesCount, dbSessionsCount);
+      batchDaysCompleted = totalSessionsConducted;
 
       // Next class calculation
-      const scheduleDays: string[] = Array.isArray(primaryBatch.schedule_days) ? primaryBatch.schedule_days : [];
       if (scheduleDays.includes(todayDayCode)) {
         nextClass = {
           is_today: true,
