@@ -6,3 +6,4 @@ __MACOSX/
 *.log
 .DS_Store
 *.zip
+dist/

@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express';
+import { Op } from 'sequelize';
 import { Student, Batch, ClassSession, AttendanceLog, User } from '../models/index.js';
 
 /**
@@ -156,8 +157,13 @@ export const checkInStudent = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    // 4. Find or create today's ClassSession for this batch
-    const todayStr = new Date().toISOString().split('T')[0];
+    // 4. Find or create today's ClassSession for this batch using local date
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
     let session = await ClassSession.findOne({
       where: {
         batch_id: batch.id,
@@ -180,19 +186,28 @@ export const checkInStudent = async (req: Request, res: Response): Promise<void>
       });
     }
 
-    // 4. Check if student already checked in for today's session
+    // 5. Check if student already checked in for today (either in this session OR anytime today)
     const existingLog = await AttendanceLog.findOne({
       where: {
-        session_id: session.id,
         student_id: student.id,
+        [Op.or]: [
+          { session_id: session.id },
+          { scan_timestamp: { [Op.between]: [startOfToday, endOfToday] } },
+        ],
       },
+      order: [['scan_timestamp', 'DESC']],
     });
 
     if (existingLog) {
+      const scanTime = new Date(existingLog.scan_timestamp).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
       res.json({
         success: true,
         already_checked_in: true,
-        message: `Student '${student.full_name}' is ALREADY marked ${existingLog.status} today (${new Date(existingLog.scan_timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}).`,
+        message: `Today's attendance is ALREADY registered for ${student.full_name} (${student.roll_number}) at ${scanTime}.`,
         student,
         batch,
         attendance_log: existingLog,
