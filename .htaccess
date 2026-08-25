@@ -6,6 +6,10 @@
     RewriteCond %{REQUEST_URI} ^/\.well-known [NC]
     RewriteRule ^ - [L]
 
+    # Exclude deploy.php so it runs directly in PHP instead of proxying to Node.js
+    RewriteCond %{REQUEST_URI} ^/deploy\.php$ [NC]
+    RewriteRule ^ - [L]
+
     RewriteRule ^(.*)$ http://127.0.0.1:5300/$1 [P,L]
 </IfModule>
 
