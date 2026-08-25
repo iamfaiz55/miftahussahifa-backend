@@ -1,6 +1,7 @@
 import type { RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
+import Student from "../models/Student.js";
 
 
 import type { UserRole } from "../models/User.js";
@@ -21,7 +22,28 @@ export const authenticateJWT: RequestHandler = async (req, res, next) => {
     const token = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
     if (!token) return res.status(401).json({ message: "Access denied. No token provided." });
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JWTPayload;
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
+
+    if (decoded.role === 'STUDENT') {
+      const student = await Student.findByPk(decoded.student_id || decoded.id, {
+        attributes: ["id", "roll_number", "full_name", "phone_number", "is_active"],
+        raw: true,
+      });
+
+      if (!student) return res.status(401).json({ message: "Student not found or invalid token." });
+      if (student.is_active === false) {
+        return res.status(403).json({ message: "Your student account is inactive. Please contact institute administration." });
+      }
+
+      (req as any).user = {
+        userId: student.id,
+        studentId: student.id,
+        role: 'STUDENT' as Role,
+        name: student.full_name,
+      };
+
+      return next();
+    }
 
     const authUser = await User.findByPk(decoded.id, {
       attributes: ["id", "role", "isBlocked", "is_active"],
@@ -67,7 +89,24 @@ export const optionalAuthenticateJWT: RequestHandler = async (req, res, next) =>
       return next();
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JWTPayload;
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
+
+    if (decoded.role === 'STUDENT') {
+      const student = await Student.findByPk(decoded.student_id || decoded.id, {
+        attributes: ["id", "roll_number", "full_name", "phone_number", "is_active"],
+        raw: true,
+      });
+      if (student && student.is_active !== false) {
+        (req as any).user = {
+          userId: student.id,
+          studentId: student.id,
+          role: 'STUDENT' as Role,
+          name: student.full_name,
+        };
+      }
+      return next();
+    }
+
     const authUser = await User.findByPk(decoded.id, {
       attributes: ["id", "role", "isBlocked", "is_active"],
       raw: true,
@@ -90,3 +129,4 @@ export const adminProtected: RequestHandler[] = [authenticateJWT, requireRole("S
 export const teacherProtected: RequestHandler[] = [authenticateJWT, requireRole("SUPER_ADMIN", "TEACHER", "admin")];
 export const staffProtected: RequestHandler[] = [authenticateJWT, requireRole("SUPER_ADMIN", "TEACHER", "SCAN_OPERATOR", "admin", "user")];
 export const userProtected: RequestHandler[] = [authenticateJWT, requireRole("SUPER_ADMIN", "TEACHER", "SCAN_OPERATOR", "admin", "user")];
+export const studentProtected: RequestHandler[] = [authenticateJWT, requireRole("STUDENT", "SUPER_ADMIN", "admin")];

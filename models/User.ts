@@ -1,7 +1,7 @@
 import { DataTypes, Model } from 'sequelize';
 import sequelize from '../utils/db.js';
 
-export type UserRole = 'SUPER_ADMIN' | 'TEACHER' | 'SCAN_OPERATOR' | 'admin' | 'user';
+export type UserRole = 'SUPER_ADMIN' | 'TEACHER' | 'SCAN_OPERATOR' | 'STUDENT' | 'admin' | 'user';
 
 class User extends Model {
   declare id: number;

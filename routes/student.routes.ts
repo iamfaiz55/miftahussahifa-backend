@@ -6,10 +6,21 @@ import {
   getStudentByIdentifier,
   updateStudent,
   deleteStudent,
+  studentLogin,
+  getStudentPortalDetails,
 } from '../controllers/student.controller.js';
-import { authenticateJWT, staffProtected, teacherProtected } from '../middlewares/protected.js';
+import { authenticateJWT, staffProtected, teacherProtected, studentProtected } from '../middlewares/protected.js';
 
 const router = Router();
+
+// Student Public Login (via Name and Mobile Number)
+router.post('/login', studentLogin);
+router.post('/student-login', studentLogin);
+
+// Student Portal Details for Logged-In Student
+router.get('/me/portal-details', authenticateJWT, getStudentPortalDetails);
+router.get('/portal-details', authenticateJWT, getStudentPortalDetails);
+router.get('/:student_id/portal-details', staffProtected, getStudentPortalDetails);
 
 // Register a new student (Requires Teacher / Super Admin / Staff auth)
 router.post('/register', teacherProtected, registerStudent);

@@ -1,6 +1,8 @@
 import type { Request, Response } from 'express';
 import crypto from 'node:crypto';
-import { Student, Batch, User } from '../models/index.js';
+import { Op } from 'sequelize';
+import { Student, Batch, User, ClassSession, AttendanceLog } from '../models/index.js';
+import { signToken } from '../middlewares/jwt.js';
 
 /**
  * Helper to generate next unique roll number and barcode
@@ -446,6 +448,414 @@ export const deleteStudent = async (req: Request, res: Response): Promise<void> 
     res.status(500).json({
       success: false,
       message: error.message || 'Internal server error while deleting student.',
+    });
+  }
+};
+
+/**
+ * Student Login via Full Name and Mobile Number
+ */
+export const studentLogin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { full_name, name, phone_number, mobileNumber, phone, roll_number } = req.body;
+
+    const inputName = (full_name || name || '').trim();
+    const rawPhone = (phone_number || mobileNumber || phone || '').trim();
+    const cleanPhoneDigits = rawPhone.replace(/\D/g, '');
+    const last10Digits = cleanPhoneDigits.slice(-10);
+
+    if (!inputName && !roll_number) {
+      res.status(400).json({
+        success: false,
+        message: 'Student Name or Roll Number is required for login.',
+      });
+      return;
+    }
+
+    if (!cleanPhoneDigits && !roll_number) {
+      res.status(400).json({
+        success: false,
+        message: 'Student Mobile / Phone Number is required for login.',
+      });
+      return;
+    }
+
+    // Find all active students
+    const students = await Student.findAll({
+      where: {
+        is_active: true,
+      },
+    });
+
+    // Match candidate
+    let matchedStudent = students.find((s) => {
+      // If roll number provided and matched
+      if (roll_number && s.roll_number.toLowerCase() === roll_number.trim().toLowerCase()) {
+        return true;
+      }
+
+      // Check phone match (either primary phone, whatsapp, or parent phone)
+      const sPhoneDigits = (s.phone_number || '').replace(/\D/g, '');
+      const sWhatsappDigits = (s.whatsapp_number || '').replace(/\D/g, '');
+      const sParentPhoneDigits = (s.parent_contact?.phone || '').replace(/\D/g, '');
+
+      const phoneMatches =
+        (last10Digits && sPhoneDigits.endsWith(last10Digits)) ||
+        (last10Digits && sWhatsappDigits.endsWith(last10Digits)) ||
+        (last10Digits && sParentPhoneDigits.endsWith(last10Digits)) ||
+        sPhoneDigits === cleanPhoneDigits ||
+        sWhatsappDigits === cleanPhoneDigits;
+
+      if (!phoneMatches) return false;
+
+      // Check name match (case-insensitive, trimmed, forgiving for extra spaces)
+      if (inputName) {
+        const normInput = inputName.toLowerCase().replace(/\s+/g, ' ');
+        const normStudentName = (s.full_name || '').toLowerCase().replace(/\s+/g, ' ');
+
+        return (
+          normStudentName === normInput ||
+          normStudentName.includes(normInput) ||
+          normInput.includes(normStudentName)
+        );
+      }
+
+      return true;
+    });
+
+    if (!matchedStudent) {
+      res.status(401).json({
+        success: false,
+        message: 'No active student found matching this Name and Mobile Number combination. Please verify your details.',
+      });
+      return;
+    }
+
+    // Sign Student JWT Token
+    const token = signToken({
+      id: matchedStudent.id,
+      student_id: matchedStudent.id,
+      role: 'STUDENT',
+      name: matchedStudent.full_name,
+    });
+
+    res.json({
+      success: true,
+      message: `Welcome, ${matchedStudent.full_name}!`,
+      token,
+      student: {
+        id: matchedStudent.id,
+        roll_number: matchedStudent.roll_number,
+        full_name: matchedStudent.full_name,
+        phone_number: matchedStudent.phone_number,
+        whatsapp_number: matchedStudent.whatsapp_number,
+        barcode_data: matchedStudent.barcode_data,
+        qr_token: matchedStudent.qr_token,
+        current_streak: matchedStudent.current_streak,
+        regularity_score: matchedStudent.regularity_score,
+      },
+    });
+  } catch (error: any) {
+    console.error('Student login error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Internal server error during student login.',
+    });
+  }
+};
+
+/**
+ * Get Comprehensive Student Portal Details (Attendance, Batch Progress, Schedule, ID Card)
+ */
+export const getStudentPortalDetails = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const studentId = (req as any).user?.studentId || (req as any).user?.userId || req.params.student_id;
+
+    if (!studentId) {
+      res.status(401).json({ success: false, message: 'Unauthorized student access.' });
+      return;
+    }
+
+    const student = await Student.findByPk(studentId);
+    if (!student) {
+      res.status(404).json({ success: false, message: 'Student record not found.' });
+      return;
+    }
+
+    // 1. Resolve Enrolled Batches
+    let enrolledBatchesList: any[] = [];
+    try {
+      if (Array.isArray(student.enrolled_batches)) {
+        enrolledBatchesList = student.enrolled_batches;
+      } else if (typeof student.enrolled_batches === 'string') {
+        enrolledBatchesList = JSON.parse(student.enrolled_batches || '[]');
+      }
+    } catch {
+      enrolledBatchesList = [];
+    }
+
+    const batchIds = enrolledBatchesList.map((b: any) => (typeof b === 'object' ? b.batch_id : b)).filter(Boolean);
+
+    let batches: any[] = [];
+    if (batchIds.length > 0) {
+      batches = await Batch.findAll({
+        where: { id: batchIds },
+        include: [
+          {
+            model: User,
+            as: 'instructor',
+            attributes: ['id', 'name', 'email', 'mobileNumber'],
+          },
+        ],
+      });
+    }
+
+    // If student has no enrolled batches in array, fall back to any active batch
+    if (batches.length === 0) {
+      const defaultBatch = await Batch.findOne({
+        where: { status: 'ACTIVE' },
+        include: [{ model: User, as: 'instructor', attributes: ['id', 'name', 'email', 'mobileNumber'] }],
+      });
+      if (defaultBatch) batches = [defaultBatch];
+    }
+
+    const primaryBatch = batches[0] || null;
+
+    // 2. Calculate Batch Progress & Sessions
+    let totalSessionsConducted = 0;
+    let totalEstimatedDays = 60; // Default estimate
+    let batchDaysCompleted = 0;
+    let batchDaysRemaining = 0;
+    let batchProgressPercent = 0;
+
+    const dayMap: { [key: number]: string } = {
+      0: 'SUN',
+      1: 'MON',
+      2: 'TUE',
+      3: 'WED',
+      4: 'THU',
+      5: 'FRI',
+      6: 'SAT',
+    };
+    const dayIndices: { [key: string]: number } = {
+      SUN: 0,
+      MON: 1,
+      TUE: 2,
+      WED: 3,
+      THU: 4,
+      FRI: 5,
+      SAT: 6,
+    };
+    const fullDayNames: { [key: string]: string } = {
+      SUN: 'Sunday',
+      MON: 'Monday',
+      TUE: 'Tuesday',
+      WED: 'Wednesday',
+      THU: 'Thursday',
+      FRI: 'Friday',
+      SAT: 'Saturday',
+    };
+
+    const todayIndex = new Date().getDay();
+    const todayDayCode = dayMap[todayIndex];
+
+    let nextClass = {
+      is_today: false,
+      next_day_name: 'Scheduled Days',
+      next_day_code: '',
+      days_left: 0,
+      days_text: 'Active',
+      formatted_time: 'Class Hours',
+    };
+
+    if (primaryBatch) {
+      // Count actual class sessions conducted for this batch
+      totalSessionsConducted = await ClassSession.count({
+        where: { batch_id: primaryBatch.id },
+      });
+
+      // Calculate timeline progress based on start_date and end_date if present
+      if (primaryBatch.start_date) {
+        const start = new Date(primaryBatch.start_date);
+        const end = primaryBatch.end_date ? new Date(primaryBatch.end_date) : new Date(start.getTime() + 90 * 24 * 60 * 60 * 1000);
+        const now = new Date();
+
+        const totalDurationMs = Math.max(1, end.getTime() - start.getTime());
+        const elapsedMs = Math.max(0, Math.min(now.getTime() - start.getTime(), totalDurationMs));
+
+        totalEstimatedDays = Math.ceil(totalDurationMs / (1000 * 60 * 60 * 24));
+        batchDaysCompleted = Math.ceil(elapsedMs / (1000 * 60 * 60 * 24));
+        batchDaysRemaining = Math.max(0, totalEstimatedDays - batchDaysCompleted);
+        batchProgressPercent = Math.round((batchDaysCompleted / totalEstimatedDays) * 100);
+      } else {
+        batchDaysCompleted = totalSessionsConducted;
+        totalEstimatedDays = Math.max(30, totalSessionsConducted + 15);
+        batchDaysRemaining = Math.max(0, totalEstimatedDays - batchDaysCompleted);
+        batchProgressPercent = Math.round((batchDaysCompleted / totalEstimatedDays) * 100);
+      }
+
+      // Next class calculation
+      const scheduleDays: string[] = Array.isArray(primaryBatch.schedule_days) ? primaryBatch.schedule_days : [];
+      if (scheduleDays.includes(todayDayCode)) {
+        nextClass = {
+          is_today: true,
+          next_day_name: 'Today',
+          next_day_code: todayDayCode,
+          days_left: 0,
+          days_text: 'Today',
+          formatted_time: 'Class Scheduled Today',
+        };
+      } else if (scheduleDays.length > 0) {
+        let minDaysLeft = 8;
+        let nextDayCode = scheduleDays[0];
+
+        for (const sDay of scheduleDays) {
+          const targetIndex = dayIndices[sDay];
+          if (targetIndex !== undefined) {
+            let diff = (targetIndex - todayIndex + 7) % 7;
+            if (diff === 0) diff = 7;
+            if (diff < minDaysLeft) {
+              minDaysLeft = diff;
+              nextDayCode = sDay;
+            }
+          }
+        }
+
+        const nextDayName = fullDayNames[nextDayCode] || nextDayCode;
+        nextClass = {
+          is_today: false,
+          next_day_name: nextDayName,
+          next_day_code: nextDayCode,
+          days_left: minDaysLeft,
+          days_text: minDaysLeft === 1 ? 'Tomorrow' : `In ${minDaysLeft} Days`,
+          formatted_time: `${nextDayName}`,
+        };
+      }
+    }
+
+    // 3. Attendance Logs & Analytics
+    const attendanceLogs = await AttendanceLog.findAll({
+      where: { student_id: student.id },
+      order: [['scan_timestamp', 'DESC']],
+      include: [
+        {
+          model: ClassSession,
+          as: 'session',
+          attributes: ['id', 'session_date', 'status'],
+        },
+        {
+          model: Batch,
+          as: 'batch',
+          attributes: ['id', 'batch_code', 'name'],
+        },
+      ],
+    });
+
+    const presentCount = attendanceLogs.filter((l) => l.status === 'PRESENT').length;
+    const lateCount = attendanceLogs.filter((l) => l.status === 'LATE').length;
+    const absentCount = attendanceLogs.filter((l) => l.status === 'ABSENT').length;
+    const attendedCount = presentCount + lateCount;
+
+    const effectiveTotalSessions = Math.max(totalSessionsConducted, attendedCount + absentCount, 1);
+    const attendancePercentage = Math.min(
+      100,
+      Math.round((attendedCount / effectiveTotalSessions) * 100)
+    );
+
+    // Format logs for frontend
+    const formattedLogs = attendanceLogs.map((log) => {
+      const d = new Date(log.scan_timestamp);
+      return {
+        id: log.id,
+        session_id: log.session_id,
+        date: d.toLocaleDateString('en-US', {
+          weekday: 'short',
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        }),
+        raw_date: d.toISOString().split('T')[0],
+        time: d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        status: log.status,
+        scan_method: log.scan_method,
+        notes: log.notes,
+        batch_name: (log as any).batch?.name || primaryBatch?.name || 'Class Batch',
+      };
+    });
+
+    res.json({
+      success: true,
+      student: {
+        id: student.id,
+        roll_number: student.roll_number,
+        full_name: student.full_name,
+        phone_number: student.phone_number,
+        whatsapp_number: student.whatsapp_number,
+        parent_contact: student.parent_contact,
+        barcode_data: student.barcode_data,
+        qr_token: student.qr_token,
+        regularity_score: student.regularity_score,
+        current_streak: student.current_streak,
+        is_active: student.is_active,
+        joined_date: student.createdAt
+          ? new Date(student.createdAt).toLocaleDateString('en-US', {
+              month: 'long',
+              day: 'numeric',
+              year: 'numeric',
+            })
+          : 'Enrolled',
+      },
+      primary_batch: primaryBatch
+        ? {
+            id: primaryBatch.id,
+            batch_code: primaryBatch.batch_code,
+            name: primaryBatch.name,
+            description: primaryBatch.description,
+            schedule_days: primaryBatch.schedule_days,
+            start_date: primaryBatch.start_date,
+            end_date: primaryBatch.end_date,
+            status: primaryBatch.status,
+            instructor: primaryBatch.instructor
+              ? {
+                  name: primaryBatch.instructor.name,
+                  email: primaryBatch.instructor.email,
+                  mobileNumber: primaryBatch.instructor.mobileNumber,
+                }
+              : null,
+            progress: {
+              total_estimated_days: totalEstimatedDays,
+              days_completed: batchDaysCompleted,
+              days_remaining: batchDaysRemaining,
+              progress_percentage: Math.min(100, batchProgressPercent),
+              total_sessions_conducted: totalSessionsConducted,
+            },
+          }
+        : null,
+      all_batches: batches.map((b) => ({
+        id: b.id,
+        batch_code: b.batch_code,
+        name: b.name,
+        schedule_days: b.schedule_days,
+        status: b.status,
+      })),
+      analytics: {
+        attendance_percentage: attendancePercentage,
+        total_sessions_conducted: totalSessionsConducted,
+        attended_count: attendedCount,
+        present_count: presentCount,
+        late_count: lateCount,
+        absent_count: absentCount,
+        current_streak: student.current_streak || 0,
+        regularity_score: student.regularity_score || 100,
+      },
+      next_class: nextClass,
+      attendance_logs: formattedLogs,
+    });
+  } catch (error: any) {
+    console.error('Error fetching student portal details:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Internal server error while fetching student portal details.',
     });
   }
 };

@@ -3,8 +3,8 @@ import jwt, { type SignOptions, type JwtPayload } from "jsonwebtoken";
 import dotenv from "dotenv";
 dotenv.config();
 
-export type UserRole = "SUPER_ADMIN" | "TEACHER" | "SCAN_OPERATOR" | "admin" | "user" | "employee" | "patient";
-export type JWTPayload = { id: number; role: UserRole; email?: string | null };
+export type UserRole = "SUPER_ADMIN" | "TEACHER" | "SCAN_OPERATOR" | "STUDENT" | "admin" | "user" | "employee" | "patient";
+export type JWTPayload = { id: number; student_id?: number; role: UserRole; email?: string | null; name?: string };
 
 export function signToken(payload: JWTPayload) {
   const secret = process.env.JWT_SECRET;
