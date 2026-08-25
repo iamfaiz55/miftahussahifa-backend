@@ -6,6 +6,7 @@ import ClassSession from './ClassSession.js';
 import AttendanceLog from './AttendanceLog.js';
 import NotificationLog from './NotificationLog.js';
 import PublicMetricsCache from './PublicMetricsCache.js';
+import CourseMaterial from './CourseMaterial.js';
 
 // --- Associations ---
 
@@ -41,6 +42,14 @@ NotificationLog.belongsTo(ClassSession, { foreignKey: 'session_id', as: 'session
 Student.hasMany(NotificationLog, { foreignKey: 'student_id', as: 'notifications' });
 NotificationLog.belongsTo(Student, { foreignKey: 'student_id', as: 'student' });
 
+// 9. Batch <-> CourseMaterial
+Batch.hasMany(CourseMaterial, { foreignKey: 'batch_id', as: 'materials' });
+CourseMaterial.belongsTo(Batch, { foreignKey: 'batch_id', as: 'batch' });
+
+// 10. User (Uploader) <-> CourseMaterial
+User.hasMany(CourseMaterial, { foreignKey: 'uploaded_by', as: 'uploadedMaterials' });
+CourseMaterial.belongsTo(User, { foreignKey: 'uploaded_by', as: 'uploader' });
+
 export {
   sequelize,
   User,
@@ -50,6 +59,7 @@ export {
   AttendanceLog,
   NotificationLog,
   PublicMetricsCache,
+  CourseMaterial,
 };
 
 export default {
@@ -61,4 +71,5 @@ export default {
   AttendanceLog,
   NotificationLog,
   PublicMetricsCache,
+  CourseMaterial,
 };

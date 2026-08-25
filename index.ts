@@ -7,6 +7,7 @@ import batchRoutes from './routes/batch.routes.js';
 import studentRoutes from './routes/student.routes.js';
 import attendanceRoutes from './routes/attendance.routes.js';
 import whatsappRoutes from './routes/whatsapp.routes.js';
+import materialRoutes from './routes/material.routes.js';
 import absenceAlertService from './services/absenceAlert.service.js';
 import { sequelize } from './models/index.js';
 
@@ -56,6 +57,7 @@ app.use('/api/classes', batchRoutes); // Friendly alias
 app.use('/api/students', studentRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/materials', materialRoutes);
 
 // Start background auto-absence alert scheduler
 absenceAlertService.startScheduler();
