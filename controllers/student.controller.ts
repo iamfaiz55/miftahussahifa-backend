@@ -453,7 +453,62 @@ export const deleteStudent = async (req: Request, res: Response): Promise<void> 
 };
 
 /**
- * Student Login via Full Name and Mobile Number
+ * Simple Levenshtein distance for typo tolerance
+ */
+function computeLevenshtein(a: string, b: string): number {
+  if (!a) return b ? b.length : 0;
+  if (!b) return a.length;
+  const matrix: number[][] = [];
+  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        );
+      }
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
+/**
+ * Fuzzy check if input name matches student name
+ */
+function isStudentNameMatch(input: string, studentName: string): boolean {
+  if (!input || !studentName) return false;
+  const cleanInput = input.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+  const cleanStudent = studentName.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+
+  if (cleanInput === cleanStudent) return true;
+  if (cleanStudent.includes(cleanInput) || cleanInput.includes(cleanStudent)) return true;
+
+  const inputWords = cleanInput.split(/\s+/).filter(Boolean);
+  const studentWords = cleanStudent.split(/\s+/).filter(Boolean);
+
+  // If any token with length >= 3 matches (e.g. 'pathan')
+  const hasMatchingWord = inputWords.some((w1) =>
+    studentWords.some((w2) => {
+      if (w1 === w2 && w1.length >= 3) return true;
+      if (w1.length >= 3 && w2.length >= 3 && (w1.includes(w2) || w2.includes(w1))) return true;
+      if (w1.length >= 3 && w2.length >= 3 && computeLevenshtein(w1, w2) <= 1) return true;
+      return false;
+    })
+  );
+
+  if (hasMatchingWord) return true;
+
+  // Overall edit distance tolerance
+  return computeLevenshtein(cleanInput, cleanStudent) <= 2;
+}
+
+/**
+ * Student Login via Full Name (or Roll Number) and Mobile Number
  */
 export const studentLogin = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -487,41 +542,44 @@ export const studentLogin = async (req: Request, res: Response): Promise<void> =
       },
     });
 
-    // Match candidate
-    let matchedStudent = students.find((s) => {
-      // If roll number provided and matched
+    // 1. Filter students whose phone number matches
+    const phoneMatchingStudents = students.filter((s) => {
       if (roll_number && s.roll_number.toLowerCase() === roll_number.trim().toLowerCase()) {
         return true;
       }
 
-      // Check phone match (either primary phone, whatsapp, or parent phone)
       const sPhoneDigits = (s.phone_number || '').replace(/\D/g, '');
       const sWhatsappDigits = (s.whatsapp_number || '').replace(/\D/g, '');
       const sParentPhoneDigits = (s.parent_contact?.phone || '').replace(/\D/g, '');
 
-      const phoneMatches =
+      return (
         (last10Digits && sPhoneDigits.endsWith(last10Digits)) ||
         (last10Digits && sWhatsappDigits.endsWith(last10Digits)) ||
         (last10Digits && sParentPhoneDigits.endsWith(last10Digits)) ||
         sPhoneDigits === cleanPhoneDigits ||
-        sWhatsappDigits === cleanPhoneDigits;
-
-      if (!phoneMatches) return false;
-
-      // Check name match (case-insensitive, trimmed, forgiving for extra spaces)
-      if (inputName) {
-        const normInput = inputName.toLowerCase().replace(/\s+/g, ' ');
-        const normStudentName = (s.full_name || '').toLowerCase().replace(/\s+/g, ' ');
-
-        return (
-          normStudentName === normInput ||
-          normStudentName.includes(normInput) ||
-          normInput.includes(normStudentName)
-        );
-      }
-
-      return true;
+        sWhatsappDigits === cleanPhoneDigits
+      );
     });
+
+    let matchedStudent: any = null;
+
+    if (phoneMatchingStudents.length === 1) {
+      // If exactly one student is registered with this phone number, match them directly!
+      matchedStudent = phoneMatchingStudents[0];
+    } else if (phoneMatchingStudents.length > 1) {
+      // If multiple students share the phone number (e.g. siblings), match by name
+      matchedStudent = phoneMatchingStudents.find((s) => isStudentNameMatch(inputName, s.full_name)) || phoneMatchingStudents[0];
+    } else {
+      // If phone wasn't exact match, check if inputName matches roll number or name
+      matchedStudent = students.find((s) => {
+        if (inputName && s.roll_number.toLowerCase() === inputName.toLowerCase()) return true;
+        if (isStudentNameMatch(inputName, s.full_name)) {
+          const sPhoneDigits = (s.phone_number || '').replace(/\D/g, '');
+          if (cleanPhoneDigits && sPhoneDigits.includes(cleanPhoneDigits.slice(-6))) return true;
+        }
+        return false;
+      });
+    }
 
     if (!matchedStudent) {
       res.status(401).json({
