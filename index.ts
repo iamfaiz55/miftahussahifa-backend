@@ -16,13 +16,14 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5600;
 
-import { DataTypes } from 'sequelize';
+import { backfillAllStudentUsernames } from './controllers/student.controller.js';
 
 // Sync database
 const syncDatabase = async () => {
   try {
     await sequelize.sync();
     console.log('Database synced successfully');
+    await backfillAllStudentUsernames();
   } catch (err) {
     console.error('Database sync/migration failed:', err);
   }

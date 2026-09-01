@@ -8,14 +8,17 @@ import {
   deleteStudent,
   studentLogin,
   getStudentPortalDetails,
+  findStudentsByPhone,
 } from '../controllers/student.controller.js';
-import { authenticateJWT, staffProtected, teacherProtected, studentProtected } from '../middlewares/protected.js';
+import { authenticateJWT, staffProtected, teacherProtected } from '../middlewares/protected.js';
 
 const router = Router();
 
-// Student Public Login (via Name and Mobile Number)
+// Student Public Login & Username Phone Lookup (No auth required)
 router.post('/login', studentLogin);
 router.post('/student-login', studentLogin);
+router.post('/find-by-phone', findStudentsByPhone);
+router.get('/find-by-phone', findStudentsByPhone);
 
 // Student Portal Details for Logged-In Student
 router.get('/me/portal-details', authenticateJWT, getStudentPortalDetails);
@@ -28,7 +31,7 @@ router.post('/register', teacherProtected, registerStudent);
 // Get list of all students (filterable by batch / search)
 router.get('/', staffProtected, getStudents);
 
-// Find student by ID, Roll Number, Barcode, or QR Token
+// Find student by ID, Roll Number, Username, Barcode, or QR Token
 router.get('/lookup/:identifier', staffProtected, getStudentByIdentifier);
 router.get('/:identifier', staffProtected, getStudentByIdentifier);
 

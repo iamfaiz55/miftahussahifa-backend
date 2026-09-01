@@ -16,6 +16,7 @@ export interface EnrolledBatch {
 class Student extends Model {
   declare id: number;
   declare roll_number: string;
+  declare username: string;
   declare full_name: string;
   declare phone_number: string;
   declare whatsapp_number: string;
@@ -42,6 +43,14 @@ Student.init(
       type: DataTypes.STRING(100),
       allowNull: false,
       unique: true,
+    },
+    username: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
+      unique: true,
+      set(val: string) {
+        this.setDataValue('username', val ? val.toLowerCase().trim() : val);
+      },
     },
     full_name: {
       type: DataTypes.STRING(255),
