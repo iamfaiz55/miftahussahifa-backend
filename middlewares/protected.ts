@@ -35,12 +35,17 @@ export const authenticateJWT: RequestHandler = async (req, res, next) => {
         return res.status(403).json({ message: "Your student account is inactive. Please contact institute administration." });
       }
 
-      (req as any).user = {
+      const studentUser = {
+        id: student.id,
         userId: student.id,
         studentId: student.id,
+        student_id: student.id,
         role: 'STUDENT' as Role,
         name: student.full_name,
       };
+
+      (req as any).user = studentUser;
+      (req as any).student = student;
 
       return next();
     }
@@ -57,6 +62,7 @@ export const authenticateJWT: RequestHandler = async (req, res, next) => {
     }
 
     (req as any).user = {
+      id: authUser.id,
       userId: authUser.id,
       role: authUser.role as Role,
     };
@@ -97,12 +103,16 @@ export const optionalAuthenticateJWT: RequestHandler = async (req, res, next) =>
         raw: true,
       });
       if (student && student.is_active !== false) {
-        (req as any).user = {
+        const studentUser = {
+          id: student.id,
           userId: student.id,
           studentId: student.id,
+          student_id: student.id,
           role: 'STUDENT' as Role,
           name: student.full_name,
         };
+        (req as any).user = studentUser;
+        (req as any).student = student;
       }
       return next();
     }

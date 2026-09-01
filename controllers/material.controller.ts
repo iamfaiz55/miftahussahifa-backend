@@ -69,26 +69,35 @@ export const getAllMaterials = async (req: Request, res: Response): Promise<void
  */
 export const getStudentMaterials = async (req: any, res: Response): Promise<void> => {
   try {
-    const studentId = req.student?.id || req.user?.student_id || req.user?.id;
-
-    const student = await Student.findByPk(studentId);
-    if (!student) {
-      res.status(404).json({
-        success: false,
-        message: 'Student profile not found.',
-      });
-      return;
-    }
+    const studentId =
+      req.user?.studentId ||
+      req.user?.userId ||
+      req.user?.student_id ||
+      req.user?.id ||
+      req.student?.id;
 
     let enrolledBatchIds: number[] = [];
-    try {
-      if (Array.isArray(student.enrolled_batches)) {
-        enrolledBatchIds = student.enrolled_batches
-          .map((b: any) => Number(b.batch_id))
-          .filter((id: number) => !isNaN(id));
+
+    if (studentId) {
+      const student = await Student.findByPk(studentId);
+      if (student) {
+        try {
+          if (Array.isArray(student.enrolled_batches)) {
+            enrolledBatchIds = student.enrolled_batches
+              .map((b: any) => Number(typeof b === 'object' ? b.batch_id : b))
+              .filter((id: number) => !isNaN(id) && id > 0);
+          } else if (typeof student.enrolled_batches === 'string') {
+            const parsed = JSON.parse(student.enrolled_batches || '[]');
+            if (Array.isArray(parsed)) {
+              enrolledBatchIds = parsed
+                .map((b: any) => Number(typeof b === 'object' ? b.batch_id : b))
+                .filter((id: number) => !isNaN(id) && id > 0);
+            }
+          }
+        } catch {
+          enrolledBatchIds = [];
+        }
       }
-    } catch {
-      enrolledBatchIds = [];
     }
 
     // Fetch materials for enrolled batches OR general institute resources (batch_id is null)
