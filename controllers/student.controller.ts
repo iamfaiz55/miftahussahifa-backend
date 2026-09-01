@@ -620,29 +620,33 @@ function isStudentNameMatch(input: string, studentName: string): boolean {
 }
 
 /**
- * Find Students / Usernames registered with a Mobile Number (Public Lookup)
+ * Find Students / Usernames registered with a Mobile Number or Name (Public Lookup)
  */
 export const findStudentsByPhone = async (req: Request, res: Response): Promise<void> => {
   try {
-    const phoneInput = (
+    const rawInput = (
       req.body?.phone ||
       req.body?.phone_number ||
       req.body?.mobileNumber ||
+      req.body?.query ||
+      req.body?.search ||
       req.query?.phone ||
       req.query?.phone_number ||
+      req.query?.search ||
       ''
     ).toString().trim();
 
-    const cleanDigits = phoneInput.replace(/\D/g, '');
-    const last10Digits = cleanDigits.slice(-10);
-
-    if (!last10Digits || last10Digits.length < 6) {
+    if (!rawInput || rawInput.length < 2) {
       res.status(400).json({
         success: false,
-        message: 'Please enter a valid mobile number (at least 6-10 digits).',
+        message: 'Please enter a mobile number, student name, or roll number.',
       });
       return;
     }
+
+    const cleanDigits = rawInput.replace(/\D/g, '');
+    const lastDigits = cleanDigits.length >= 6 ? cleanDigits.slice(-10) : '';
+    const cleanText = rawInput.toLowerCase().trim();
 
     // Load active batches map
     const allBatches = await Batch.findAll({
@@ -651,9 +655,15 @@ export const findStudentsByPhone = async (req: Request, res: Response): Promise<
     const batchMap = new Map<number, string>();
     allBatches.forEach((b) => batchMap.set(b.id, `${b.name} (${b.batch_code})`));
 
-    // Fetch active students
+    // Fetch all students (not strictly active only, in case is_active is null)
     const students = await Student.findAll({
-      where: { is_active: true },
+      where: {
+        [Op.or]: [
+          { is_active: true },
+          { is_active: 1 },
+          { is_active: null as any },
+        ],
+      },
       attributes: ['id', 'roll_number', 'username', 'full_name', 'phone_number', 'whatsapp_number', 'parent_contact', 'enrolled_batches'],
     });
 
@@ -661,14 +671,39 @@ export const findStudentsByPhone = async (req: Request, res: Response): Promise<
       const sPhone = (s.phone_number || '').replace(/\D/g, '');
       const sWhatsapp = (s.whatsapp_number || '').replace(/\D/g, '');
       const sParentPhone = (s.parent_contact?.phone || '').replace(/\D/g, '');
+      const sFullName = (s.full_name || '').toLowerCase();
+      const sRoll = (s.roll_number || '').toLowerCase();
+      const sUsername = (s.username || '').toLowerCase();
 
-      return (
-        (last10Digits && sPhone.endsWith(last10Digits)) ||
-        (last10Digits && sWhatsapp.endsWith(last10Digits)) ||
-        (last10Digits && sParentPhone.endsWith(last10Digits)) ||
-        sPhone.includes(cleanDigits) ||
-        sWhatsapp.includes(cleanDigits)
-      );
+      // 1. Phone digits matching
+      if (cleanDigits && cleanDigits.length >= 4) {
+        if (
+          (lastDigits && sPhone.endsWith(lastDigits)) ||
+          (lastDigits && sWhatsapp.endsWith(lastDigits)) ||
+          (lastDigits && sParentPhone.endsWith(lastDigits)) ||
+          sPhone.includes(cleanDigits) ||
+          cleanDigits.includes(sPhone) ||
+          sWhatsapp.includes(cleanDigits) ||
+          sParentPhone.includes(cleanDigits)
+        ) {
+          return true;
+        }
+      }
+
+      // 2. Name, Roll Number, or Username matching
+      if (cleanText.length >= 2) {
+        if (
+          sFullName.includes(cleanText) ||
+          cleanText.includes(sFullName) ||
+          sRoll.includes(cleanText) ||
+          sUsername.includes(cleanText) ||
+          isStudentNameMatch(cleanText, sFullName)
+        ) {
+          return true;
+        }
+      }
+
+      return false;
     });
 
     // Make sure all matched students have username populated
@@ -704,10 +739,10 @@ export const findStudentsByPhone = async (req: Request, res: Response): Promise<
       students: formatted,
     });
   } catch (error: any) {
-    console.error('Error finding students by phone:', error);
+    console.error('Error finding students by phone/name:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to find registered student accounts for this mobile number.',
+      message: 'Failed to find registered student accounts.',
       error: error.message,
     });
   }
