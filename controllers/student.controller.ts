@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import crypto from 'node:crypto';
 import { Op } from 'sequelize';
+import sequelize from '../utils/db.js';
 import { Student, Batch, User, ClassSession, AttendanceLog } from '../models/index.js';
 import { signToken } from '../middlewares/jwt.js';
 
@@ -77,6 +78,22 @@ export async function generateUniqueStudentUsername(
  */
 export async function backfillAllStudentUsernames(): Promise<void> {
   try {
+    // 1. Ensure 'username' column exists in students table
+    try {
+      await sequelize.query('ALTER TABLE `students` ADD COLUMN `username` VARCHAR(100) NULL AFTER `roll_number`');
+      console.log('[Migration] Added username column to students table');
+    } catch {
+      // Column already exists
+    }
+
+    // 2. Add unique index if missing
+    try {
+      await sequelize.query('ALTER TABLE `students` ADD UNIQUE KEY `students_username_unique` (`username`)');
+    } catch {
+      // Index already exists
+    }
+
+    // 3. Backfill missing usernames
     const studentsWithoutUser = await Student.findAll({
       where: {
         [Op.or]: [{ username: null }, { username: '' }],
