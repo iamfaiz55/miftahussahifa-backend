@@ -3,6 +3,7 @@ const { Client, LocalAuth } = pkg;
 import qrcode from 'qrcode';
 import path from 'path';
 import fs from 'fs';
+import { execSync } from 'child_process';
 
 export type WhatsAppConnectionStatus = 'DISCONNECTED' | 'INITIALIZING' | 'SCAN_QR' | 'AUTHENTICATED' | 'READY';
 
@@ -24,6 +25,30 @@ function getChromeExecutablePath(): string | undefined {
     }
   }
   return undefined;
+}
+
+function cleanupSingletonLocks(dataPath: string) {
+  try {
+    // Kill any lingering orphan chrome processes on this session path
+    try {
+      execSync('pkill -f "Google Chrome.*\.wwebjs_auth" || true', { stdio: 'ignore' });
+    } catch {}
+
+    const sessionDir = path.join(dataPath, 'session');
+    if (fs.existsSync(sessionDir)) {
+      const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket', 'DevToolsActivePort', 'LOCK'];
+      for (const file of lockFiles) {
+        const fullPath = path.join(sessionDir, file);
+        if (fs.existsSync(fullPath)) {
+          try {
+            fs.unlinkSync(fullPath);
+          } catch {}
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[WhatsAppService] Lock cleanup warning:', err);
+  }
 }
 
 interface WhatsAppServiceState {
@@ -57,18 +82,28 @@ class WhatsAppService {
   }
 
   public async initialize(): Promise<void> {
-    if (this.client && (this.state.status === 'READY' || this.state.status === 'SCAN_QR' || this.state.status === 'INITIALIZING')) {
-      console.log('[WhatsAppService] Client already initialized or in progress.');
-      return;
+    // Reset state immediately so any status fetch gets clean INITIALIZING state
+    this.state.status = 'INITIALIZING';
+    this.state.errorReason = null;
+    this.state.qrCodeDataUrl = null;
+    this.state.qrRaw = null;
+
+    // If an existing client is running, tear it down cleanly first
+    if (this.client) {
+      console.log('[WhatsAppService] Resetting existing client before fresh initialization...');
+      try {
+        await this.client.destroy();
+      } catch (err) {
+        console.warn('[WhatsAppService] Error destroying previous client instance:', err);
+      }
+      this.client = null;
     }
 
     try {
-      this.state.status = 'INITIALIZING';
-      this.state.errorReason = null;
-      this.state.qrCodeDataUrl = null;
-      this.state.qrRaw = null;
-
       console.log('[WhatsAppService] Starting WhatsApp Web client with LocalAuth...');
+
+      const authDataPath = path.join(process.cwd(), '.wwebjs_auth');
+      cleanupSingletonLocks(authDataPath);
 
       const chromePath = getChromeExecutablePath();
       if (chromePath) {
@@ -77,12 +112,8 @@ class WhatsAppService {
 
       this.client = new Client({
         authStrategy: new LocalAuth({
-          dataPath: path.join(process.cwd(), '.wwebjs_auth'),
+          dataPath: authDataPath,
         }),
-        webVersionCache: {
-          type: 'remote',
-          remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1045443729-alpha.html',
-        },
         puppeteer: {
           headless: true,
           executablePath: chromePath,
@@ -92,16 +123,15 @@ class WhatsAppService {
             '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
-            '--no-zygote',
             '--disable-gpu',
-            '--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
           ],
         },
       });
 
       this.client.on('qr', async (qr: string) => {
-        console.log('[WhatsAppService] New QR code generated for pairing');
+        console.log('[WhatsAppService] New QR code generated for pairing (length:', qr.length, ')');
         this.state.status = 'SCAN_QR';
+        this.state.errorReason = null;
         this.state.qrRaw = qr;
         try {
           this.state.qrCodeDataUrl = await qrcode.toDataURL(qr, {
@@ -120,6 +150,7 @@ class WhatsAppService {
       this.client.on('authenticated', () => {
         console.log('[WhatsAppService] Client authenticated successfully');
         this.state.status = 'AUTHENTICATED';
+        this.state.errorReason = null;
         this.state.qrCodeDataUrl = null;
         this.state.qrRaw = null;
       });
@@ -127,12 +158,14 @@ class WhatsAppService {
       this.client.on('auth_failure', (msg: string) => {
         console.error('[WhatsAppService] Authentication failure:', msg);
         this.state.status = 'DISCONNECTED';
-        this.state.errorReason = `Auth failure: ${msg}`;
+        this.state.errorReason = `Authentication failed: ${msg}`;
+        this.client = null;
       });
 
       this.client.on('ready', async () => {
         console.log('[WhatsAppService] WhatsApp Web is READY and connected!');
         this.state.status = 'READY';
+        this.state.errorReason = null;
         this.state.lastConnectedAt = new Date();
         this.state.qrCodeDataUrl = null;
         this.state.qrRaw = null;
@@ -153,6 +186,7 @@ class WhatsAppService {
         this.state.status = 'DISCONNECTED';
         this.state.errorReason = `Disconnected: ${reason}`;
         this.state.phoneNumber = null;
+        this.state.pushName = null;
         this.client = null;
       });
 
@@ -170,31 +204,44 @@ class WhatsAppService {
       if (this.client) {
         try {
           await this.client.logout();
-        } catch {}
+        } catch (err) {
+          console.warn('[WhatsAppService] client.logout() notice:', err);
+        }
         try {
           await this.client.destroy();
-        } catch {}
+        } catch (err) {
+          console.warn('[WhatsAppService] client.destroy() notice:', err);
+        }
         this.client = null;
       }
+
       this.state.status = 'DISCONNECTED';
+      this.state.errorReason = null;
       this.state.qrCodeDataUrl = null;
       this.state.qrRaw = null;
       this.state.phoneNumber = null;
       this.state.pushName = null;
 
       // Clean session auth cache
+      try {
+        execSync('pkill -f "Google Chrome.*\.wwebjs_auth" || true', { stdio: 'ignore' });
+      } catch {}
+
       const authPath = path.join(process.cwd(), '.wwebjs_auth');
       if (fs.existsSync(authPath)) {
         try {
           fs.rmSync(authPath, { recursive: true, force: true });
-        } catch {}
+        } catch (rmErr) {
+          console.warn('[WhatsAppService] Error clearing .wwebjs_auth directory:', rmErr);
+        }
       }
 
-      console.log('[WhatsAppService] Logged out, destroyed client session, and cleared session cache.');
+      console.log('[WhatsAppService] Successfully unlinked session, destroyed browser, and cleared session cache.');
     } catch (err: any) {
       console.error('[WhatsAppService] Logout error:', err);
       this.client = null;
       this.state.status = 'DISCONNECTED';
+      this.state.errorReason = null;
     }
   }
 
