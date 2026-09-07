@@ -355,8 +355,11 @@ export const getStudents = async (req: Request, res: Response): Promise<void> =>
       });
     }
 
+    const total = await Student.count();
+
     res.json({
       success: true,
+      total,
       count: filtered.length,
       students: filtered,
     });
