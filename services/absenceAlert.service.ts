@@ -83,6 +83,7 @@ export class AbsenceAlertService {
       };
 
       // Get current time in Indian Standard Time (IST) for accurate academy schedule tracking
+      const now = new Date();
       const istDateStr = now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
       const istDate = new Date(istDateStr);
       const todayIndex = istDate.getDay();
