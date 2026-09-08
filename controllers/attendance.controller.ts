@@ -199,6 +199,41 @@ export const checkInStudent = async (req: Request, res: Response): Promise<void>
     });
 
     if (existingLog) {
+      // If student was auto-marked ABSENT (e.g. 30 mins after class end) or has an ABSENT log,
+      // but attends class and scans their barcode after class:
+      if (existingLog.status === 'ABSENT' || existingLog.scan_method === 'AUTO_ABSENT') {
+        const method = scan_method || 'QR_CAMERA';
+        await existingLog.update({
+          status: 'PRESENT',
+          scan_timestamp: new Date(),
+          scan_method: method,
+          scanned_code: searchTarget,
+          marked_by: (req as any).user?.id || null,
+          notes: `Attended class - Scanned after class end via ${method} (Updated to PRESENT)`,
+        });
+
+        // Update student streak
+        const nextStreak = (student.current_streak || 0) + 1;
+        await student.update({
+          current_streak: nextStreak,
+        });
+
+        res.json({
+          success: true,
+          already_checked_in: false,
+          updated_from_absent: true,
+          message: `Check-in recorded! ${student.full_name} (${student.roll_number}) marked PRESENT.`,
+          student: {
+            ...student.toJSON(),
+            current_streak: nextStreak,
+          },
+          batch,
+          attendance_log: existingLog,
+        });
+        return;
+      }
+
+      // If already marked PRESENT / LATE:
       const scanTime = new Date(existingLog.scan_timestamp).toLocaleTimeString([], {
         hour: '2-digit',
         minute: '2-digit',
