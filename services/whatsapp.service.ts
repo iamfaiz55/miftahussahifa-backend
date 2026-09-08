@@ -8,13 +8,29 @@ import { execSync } from 'child_process';
 export type WhatsAppConnectionStatus = 'DISCONNECTED' | 'INITIALIZING' | 'SCAN_QR' | 'AUTHENTICATED' | 'READY';
 
 function getChromeExecutablePath(): string | undefined {
+  // 1. Try dynamic 'which' discovery on Linux/Unix systems
+  try {
+    const whichResult = execSync('which google-chrome || which google-chrome-stable || which chromium || which chromium-browser', {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
+    if (whichResult && fs.existsSync(whichResult)) {
+      return whichResult;
+    }
+  } catch {}
+
+  // 2. Try known explicit filesystem paths
   const paths = [
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/Applications/Chromium.app/Contents/MacOS/Chromium',
     '/usr/bin/google-chrome',
     '/usr/bin/google-chrome-stable',
     '/usr/bin/chromium-browser',
     '/usr/bin/chromium',
+    '/snap/bin/chromium',
+    '/usr/local/bin/chromium',
+    '/usr/local/bin/google-chrome',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
   ];
@@ -31,7 +47,7 @@ function cleanupSingletonLocks(dataPath: string) {
   try {
     // Kill any lingering orphan chrome processes on this session path
     try {
-      execSync('pkill -f "Google Chrome.*\.wwebjs_auth" || true', { stdio: 'ignore' });
+      execSync('pkill -f "Google Chrome.*\.wwebjs_auth" || pkill -f "chromium.*\.wwebjs_auth" || true', { stdio: 'ignore' });
     } catch {}
 
     const sessionDir = path.join(dataPath, 'session');
@@ -107,7 +123,7 @@ class WhatsAppService {
 
       const chromePath = getChromeExecutablePath();
       if (chromePath) {
-        console.log(`[WhatsAppService] Using system Chrome at: ${chromePath}`);
+        console.log(`[WhatsAppService] Using system Chrome/Chromium binary at: ${chromePath}`);
       }
 
       this.client = new Client({
@@ -123,7 +139,13 @@ class WhatsAppService {
             '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
+            '--no-zygote',
+            '--single-process',
             '--disable-gpu',
+            '--disable-software-rasterizer',
+            '--disable-extensions',
+            '--disable-default-apps',
+            '--mute-audio',
           ],
         },
       });
