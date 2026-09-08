@@ -293,7 +293,7 @@ export const getTodayAttendanceLogs = async (req: Request, res: Response): Promi
         {
           model: Student,
           as: 'student',
-          attributes: ['id', 'roll_number', 'full_name', 'phone_number', 'photo_url', 'current_streak'],
+          attributes: ['id', 'roll_number', 'username', 'full_name', 'phone_number', 'whatsapp_number', 'current_streak'],
         },
         {
           model: Batch,
