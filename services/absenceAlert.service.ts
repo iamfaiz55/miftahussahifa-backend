@@ -82,11 +82,14 @@ export class AbsenceAlertService {
         SAT: 'Saturday',
       };
 
+      // Get current time in Indian Standard Time (IST) for accurate academy schedule tracking
       const now = new Date();
-      const todayIndex = now.getDay();
+      const istDateStr = now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+      const istDate = new Date(istDateStr);
+      const todayIndex = istDate.getDay();
       const todayDayCode = dayMap[todayIndex];
-      const todayStr = now.toISOString().split('T')[0];
-      const currentTimeStr = now.toTimeString().slice(0, 5); // "HH:MM" e.g. "22:05"
+      const todayStr = `${istDate.getFullYear()}-${String(istDate.getMonth() + 1).padStart(2, '0')}-${String(istDate.getDate()).padStart(2, '0')}`;
+      const currentMinutesSinceMidnight = istDate.getHours() * 60 + istDate.getMinutes();
 
       // 1. Fetch all active batches
       let batches = await Batch.findAll({
@@ -96,16 +99,21 @@ export class AbsenceAlertService {
       if (forceBatchId) {
         batches = batches.filter((b) => b.id === Number(forceBatchId));
       } else {
-        // Filter batches scheduled for today whose timing.end_time has arrived
+        // Filter batches scheduled for today whose (timing.end_time + 30 minutes) has arrived
         batches = batches.filter((b) => {
           const scheduleDays = Array.isArray(b.schedule_days) ? b.schedule_days : [];
           if (!scheduleDays.includes(todayDayCode as any)) {
             return false;
           }
 
-          const endTime = b.timing?.end_time || '23:59';
-          // Check if current time is past or equal to end time
-          return currentTimeStr >= endTime;
+          const endTime = b.timing?.end_time;
+          if (!endTime) return false;
+
+          const [hStr, mStr] = endTime.split(':');
+          const endMinutes = (parseInt(hStr, 10) || 0) * 60 + (parseInt(mStr, 10) || 0);
+          const triggerMinutes = endMinutes + 30; // 30-minute grace buffer after class ends
+
+          return currentMinutesSinceMidnight >= triggerMinutes;
         });
       }
 
