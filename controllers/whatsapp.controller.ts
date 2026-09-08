@@ -23,14 +23,15 @@ export const getWhatsAppStatus = async (req: Request, res: Response): Promise<vo
  */
 export const initializeWhatsApp = async (req: Request, res: Response): Promise<void> => {
   try {
+    const { phoneNumber } = req.body || {};
     // Non-blocking initialization so response returns immediately
-    whatsappService.initialize().catch((err) => {
+    whatsappService.initialize(phoneNumber).catch((err) => {
       console.error('[WhatsAppController] Init error:', err);
     });
 
     res.json({
       success: true,
-      message: 'WhatsApp Web client initialization started. QR will be generated shortly.',
+      message: 'WhatsApp client initialization started.',
       ...whatsappService.getState(),
     });
   } catch (error: any) {

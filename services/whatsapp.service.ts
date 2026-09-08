@@ -3,6 +3,7 @@ import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  Browsers,
   type WASocket,
   type ConnectionState,
 } from '@whiskeysockets/baileys';
@@ -17,6 +18,7 @@ interface WhatsAppServiceState {
   status: WhatsAppConnectionStatus;
   qrCodeDataUrl: string | null;
   qrRaw: string | null;
+  pairingCode: string | null;
   phoneNumber: string | null;
   pushName: string | null;
   lastConnectedAt: Date | null;
@@ -32,6 +34,7 @@ class WhatsAppService {
     status: 'DISCONNECTED',
     qrCodeDataUrl: null,
     qrRaw: null,
+    pairingCode: null,
     phoneNumber: null,
     pushName: null,
     lastConnectedAt: null,
@@ -39,7 +42,6 @@ class WhatsAppService {
   };
 
   constructor() {
-    // If previous auth session exists, attempt passive restore on startup
     this.checkSavedSession();
   }
 
@@ -59,7 +61,7 @@ class WhatsAppService {
     return { ...this.state };
   }
 
-  public async initialize(): Promise<void> {
+  public async initialize(pairPhoneNumber?: string): Promise<void> {
     if (this.isInitializing) {
       console.log('[WhatsAppService] Initialization already in progress, skipping duplicate call.');
       return;
@@ -70,6 +72,7 @@ class WhatsAppService {
     this.state.errorReason = null;
     this.state.qrCodeDataUrl = null;
     this.state.qrRaw = null;
+    this.state.pairingCode = null;
 
     try {
       // Ensure auth directory exists
@@ -94,11 +97,12 @@ class WhatsAppService {
       try {
         const vResult = await fetchLatestBaileysVersion();
         version = vResult.version;
+        console.log('[WhatsAppService] Fetched latest Baileys WhatsApp version:', version);
       } catch {
-        // Fallback to default Baileys version
+        // Fallback
       }
 
-      console.log('[WhatsAppService] Creating Baileys pure WebSocket connection (Zero Chromium)...');
+      console.log('[WhatsAppService] Creating Baileys socket with official Ubuntu Chrome browser profile...');
 
       this.sock = makeWASocket({
         version,
@@ -108,20 +112,43 @@ class WhatsAppService {
         },
         logger,
         printQRInTerminal: false,
-        browser: ['Miftahussahifa OS', 'Chrome', '1.0.0'],
+        // Use official standard OS/Browser identification to prevent handshake rejection
+        browser: Browsers.ubuntu('Chrome'),
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
+        generateHighQualityLinkPreview: false,
         connectTimeoutMs: 60000,
         keepAliveIntervalMs: 25000,
         emitOwnEvents: false,
         retryRequestDelayMs: 250,
+        getMessage: async () => undefined,
       });
 
       this.sock.ev.on('creds.update', saveCreds);
+
+      // Handle pairing code if requested
+      if (pairPhoneNumber && !this.sock.authState.creds.registered) {
+        let cleanPhone = pairPhoneNumber.replace(/\D/g, '');
+        if (cleanPhone.length === 10) cleanPhone = '91' + cleanPhone;
+        setTimeout(async () => {
+          try {
+            if (this.sock && !this.sock.authState.creds.registered) {
+              const code = await this.sock.requestPairingCode(cleanPhone);
+              console.log('[WhatsAppService] Generated 8-digit Pairing Code:', code);
+              this.state.pairingCode = code;
+              this.state.status = 'SCAN_QR';
+            }
+          } catch (codeErr: any) {
+            console.error('[WhatsAppService] Failed to request pairing code:', codeErr);
+          }
+        }, 3000);
+      }
 
       this.sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-          console.log('[WhatsAppService] New QR code generated for pairing');
+          console.log('[WhatsAppService] New QR code received for pairing');
           this.state.status = 'SCAN_QR';
           this.state.errorReason = null;
           this.state.qrRaw = qr;
@@ -140,12 +167,13 @@ class WhatsAppService {
         }
 
         if (connection === 'open') {
-          console.log('[WhatsAppService] WhatsApp Web is READY and connected via WebSocket!');
+          console.log('[WhatsAppService] WhatsApp Web is READY and connected!');
           this.state.status = 'READY';
           this.state.errorReason = null;
           this.state.lastConnectedAt = new Date();
           this.state.qrCodeDataUrl = null;
           this.state.qrRaw = null;
+          this.state.pairingCode = null;
 
           const rawId = this.sock?.user?.id || '';
           this.state.phoneNumber = rawId.split(':')[0] || rawId.split('@')[0] || null;
@@ -159,17 +187,17 @@ class WhatsAppService {
           console.warn('[WhatsAppService] Connection closed. StatusCode:', statusCode, 'Should reconnect:', shouldReconnect);
 
           if (statusCode === DisconnectReason.loggedOut) {
-            console.log('[WhatsAppService] User logged out from phone. Cleaning session...');
+            console.log('[WhatsAppService] User logged out from phone. Resetting session...');
             this.state.status = 'DISCONNECTED';
             this.state.phoneNumber = null;
             this.state.pushName = null;
             this.state.qrCodeDataUrl = null;
             this.state.qrRaw = null;
+            this.state.pairingCode = null;
             this.state.errorReason = 'Logged out from device.';
             this.clearAuthFiles();
             this.sock = null;
           } else {
-            // Transient disconnect, will keep status or reconnect on next request
             if (this.state.status !== 'READY') {
               this.state.status = 'DISCONNECTED';
             }
@@ -186,7 +214,7 @@ class WhatsAppService {
     }
   }
 
-  private clearAuthFiles() {
+  public clearAuthFiles() {
     try {
       if (fs.existsSync(AUTH_FOLDER)) {
         fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
@@ -214,6 +242,7 @@ class WhatsAppService {
       this.state.errorReason = null;
       this.state.qrCodeDataUrl = null;
       this.state.qrRaw = null;
+      this.state.pairingCode = null;
       this.state.phoneNumber = null;
       this.state.pushName = null;
 
@@ -228,8 +257,6 @@ class WhatsAppService {
 
   /**
    * Send a direct WhatsApp text message to an adult student
-   * @param rawPhone Mobile number (e.g. "9960669724" or "+919960669724")
-   * @param messageText Formatted message text
    */
   public async sendDirectMessage(rawPhone: string, messageText: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
     if (!this.sock || this.state.status !== 'READY') {
@@ -240,20 +267,17 @@ class WhatsAppService {
     }
 
     try {
-      // Standardize phone number format
       let cleaned = (rawPhone || '').toString().replace(/\D/g, '');
       if (!cleaned) {
         return { success: false, error: 'Empty phone number provided.' };
       }
 
-      // If Indian 10-digit number without country code, prepend 91
       if (cleaned.length === 10) {
         cleaned = '91' + cleaned;
       }
 
       const jid = `${cleaned}@s.whatsapp.net`;
 
-      // Check on WhatsApp presence
       try {
         const [result] = await this.sock.onWhatsApp(jid);
         if (result && !result.exists) {
@@ -263,9 +287,7 @@ class WhatsAppService {
             error: `Phone number ${cleaned} is not registered on WhatsApp.`,
           };
         }
-      } catch (checkErr) {
-        // Proceed even if check fails
-      }
+      } catch {}
 
       const sentMsg = await this.sock.sendMessage(jid, { text: messageText });
       const msgId = sentMsg?.key?.id || 'SENT_OK';
