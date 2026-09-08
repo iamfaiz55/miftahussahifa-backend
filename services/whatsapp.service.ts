@@ -4,11 +4,24 @@ import qrcode from 'qrcode';
 import path from 'path';
 import fs from 'fs';
 import { execSync } from 'child_process';
+import chromium from '@sparticuz/chromium';
 
 export type WhatsAppConnectionStatus = 'DISCONNECTED' | 'INITIALIZING' | 'SCAN_QR' | 'AUTHENTICATED' | 'READY';
 
-function getChromeExecutablePath(): string | undefined {
-  // 1. Try dynamic 'which' discovery on Linux/Unix systems
+async function getChromeExecutablePath(): Promise<string | undefined> {
+  // 1. If running on Linux (cPanel, VPS, CloudLinux), use self-contained standalone Chromium
+  if (process.platform === 'linux') {
+    try {
+      const sparticuzPath = await chromium.executablePath();
+      if (sparticuzPath && fs.existsSync(sparticuzPath)) {
+        return sparticuzPath;
+      }
+    } catch (err) {
+      console.warn('[WhatsAppService] @sparticuz/chromium lookup note:', err);
+    }
+  }
+
+  // 2. Try dynamic 'which' discovery on Linux/Unix systems
   try {
     const whichResult = execSync('which google-chrome || which google-chrome-stable || which chromium || which chromium-browser', {
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -20,7 +33,7 @@ function getChromeExecutablePath(): string | undefined {
     }
   } catch {}
 
-  // 2. Try known explicit filesystem paths
+  // 3. Try known explicit filesystem paths
   const paths = [
     '/usr/bin/google-chrome',
     '/usr/bin/google-chrome-stable',
@@ -35,7 +48,13 @@ function getChromeExecutablePath(): string | undefined {
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
   ];
 
-  // 3. Try Puppeteer downloaded browser cache (~/.cache/puppeteer)
+  for (const p of paths) {
+    if (fs.existsSync(p)) {
+      return p;
+    }
+  }
+
+  // 4. Try Puppeteer downloaded browser cache (~/.cache/puppeteer)
   try {
     const homeDir = process.env.HOME || process.env.USERPROFILE || '';
     const cacheDirs = [
@@ -144,7 +163,7 @@ class WhatsAppService {
       const authDataPath = path.join(process.cwd(), '.wwebjs_auth');
       cleanupSingletonLocks(authDataPath);
 
-      const chromePath = getChromeExecutablePath();
+      const chromePath = await getChromeExecutablePath();
       if (chromePath) {
         console.log(`[WhatsAppService] Using system Chrome/Chromium binary at: ${chromePath}`);
       }
