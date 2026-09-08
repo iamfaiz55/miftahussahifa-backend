@@ -264,13 +264,9 @@ export const getTodayAttendanceLogs = async (req: Request, res: Response): Promi
     const now = new Date();
     const todayStr = (date as string) || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     
-    // 24-hour window around target date to cover all server & client timezones
     const targetDate = new Date(todayStr);
     const startWindow = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0, 0);
     const endWindow = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
-
-    // Also look back 24 hours from right now if querying for today
-    const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
     const sessions = await ClassSession.findAll({
       where: { session_date: todayStr },
@@ -284,11 +280,10 @@ export const getTodayAttendanceLogs = async (req: Request, res: Response): Promi
           ...(sessionIds.length > 0 ? [{ session_id: { [Op.in]: sessionIds } }] : []),
           { scan_timestamp: { [Op.between]: [startWindow, endWindow] } },
           { createdAt: { [Op.between]: [startWindow, endWindow] } },
-          ...(!date ? [{ scan_timestamp: { [Op.gte]: last24h } }] : []),
         ],
       },
       order: [['scan_timestamp', 'DESC'], ['id', 'DESC']],
-      limit: 200,
+      limit: 300,
       include: [
         {
           model: Student,
