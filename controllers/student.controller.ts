@@ -418,10 +418,43 @@ export const getStudentByIdentifier = async (req: Request, res: Response): Promi
       ],
     });
 
+    // Fetch complete historical attendance logs for this student
+    const attendanceLogs = await AttendanceLog.findAll({
+      where: { student_id: student.id },
+      order: [['scan_timestamp', 'DESC'], ['createdAt', 'DESC']],
+      include: [
+        {
+          model: Batch,
+          as: 'batch',
+          attributes: ['id', 'name', 'batch_code'],
+        },
+        {
+          model: ClassSession,
+          as: 'session',
+          attributes: ['id', 'session_date', 'status'],
+        },
+      ],
+    });
+
+    const totalLogs = attendanceLogs.length;
+    const presentCount = attendanceLogs.filter((l) => l.status === 'PRESENT').length;
+    const absentCount = attendanceLogs.filter((l) => l.status === 'ABSENT').length;
+    const lateCount = attendanceLogs.filter((l) => l.status === 'LATE').length;
+    const attendancePercentage = totalLogs > 0 ? Math.round((presentCount / totalLogs) * 100) : 100;
+
     res.json({
       success: true,
       student,
       enrolled_batches_details: batches,
+      attendance_logs: attendanceLogs,
+      attendance_stats: {
+        total: totalLogs,
+        present: presentCount,
+        absent: absentCount,
+        late: lateCount,
+        percentage: attendancePercentage,
+        current_streak: student.current_streak || 0,
+      },
     });
   } catch (error: any) {
     console.error('Error fetching student:', error);

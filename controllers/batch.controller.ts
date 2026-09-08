@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import { Batch, User, Student, ClassSession } from '../models/index.js';
+import { Batch, User, Student, ClassSession, AttendanceLog } from '../models/index.js';
 
 /**
  * Helper to auto-generate batch code if not provided
@@ -218,12 +218,6 @@ export const getBatchById = async (req: Request, res: Response): Promise<void> =
           as: 'instructor',
           attributes: ['id', 'name', 'email', 'mobileNumber'],
         },
-        {
-          model: ClassSession,
-          as: 'sessions',
-          limit: 10,
-          order: [['session_date', 'DESC']],
-        },
       ],
     });
 
@@ -232,9 +226,10 @@ export const getBatchById = async (req: Request, res: Response): Promise<void> =
       return;
     }
 
-    // Get enrolled students
+    // Get all active students enrolled in this batch
     const allStudents = await Student.findAll({
       where: { is_active: true },
+      attributes: ['id', 'roll_number', 'username', 'full_name', 'phone_number', 'whatsapp_number', 'enrolled_batches', 'current_streak'],
     });
 
     const enrolledStudents = allStudents.filter((s) => {
@@ -251,6 +246,122 @@ export const getBatchById = async (req: Request, res: Response): Promise<void> =
       return Array.isArray(batchesArr) && batchesArr.some((eb: any) => eb.batch_id === batch.id && eb.status === 'ACTIVE');
     });
 
+    const enrolledStudentMap = new Map(enrolledStudents.map((s) => [s.id, s]));
+
+    // Fetch all ClassSessions for this batch
+    const sessions = await ClassSession.findAll({
+      where: { batch_id: batch.id },
+      order: [['session_date', 'DESC']],
+    });
+
+    // Fetch all AttendanceLogs for these sessions
+    const sessionIds = sessions.map((s) => s.id);
+    const logs = sessionIds.length > 0 ? await AttendanceLog.findAll({
+      where: { batch_id: batch.id },
+      order: [['scan_timestamp', 'DESC']],
+      include: [
+        {
+          model: Student,
+          as: 'student',
+          attributes: ['id', 'roll_number', 'username', 'full_name', 'phone_number', 'whatsapp_number'],
+        },
+      ],
+    }) : [];
+
+    // Map logs by session_id and by student_id
+    const logsBySession = new Map<number, typeof logs>();
+    const logsByStudent = new Map<number, typeof logs>();
+
+    for (const log of logs) {
+      // By session
+      if (!logsBySession.has(log.session_id)) {
+        logsBySession.set(log.session_id, []);
+      }
+      logsBySession.get(log.session_id)!.push(log);
+
+      // By student
+      if (!logsByStudent.has(log.student_id)) {
+        logsByStudent.set(log.student_id, []);
+      }
+      logsByStudent.get(log.student_id)!.push(log);
+    }
+
+    // Build session breakdowns with present and absent student lists
+    const sessionBreakdowns = sessions.map((sess) => {
+      const sessLogs = logsBySession.get(sess.id) || [];
+      const presentLogs = sessLogs.filter((l) => l.status === 'PRESENT' || l.status === 'LATE' || l.status === 'EXCUSED');
+      const presentStudentIds = new Set(presentLogs.map((l) => l.student_id));
+
+      const presentList = presentLogs.map((l) => {
+        const st = enrolledStudentMap.get(l.student_id) || (l as any).student;
+        return {
+          id: l.student_id,
+          full_name: st?.full_name || 'Student',
+          roll_number: st?.roll_number || 'N/A',
+          phone_number: st?.phone_number || '',
+          whatsapp_number: st?.whatsapp_number || st?.phone_number || '',
+          status: l.status,
+          scan_time: l.scan_timestamp,
+          scan_method: l.scan_method,
+        };
+      });
+
+      // Absent students are enrolled students who are not in presentList
+      const absentList = enrolledStudents
+        .filter((st) => !presentStudentIds.has(st.id))
+        .map((st) => {
+          const absentLog = sessLogs.find((l) => l.student_id === st.id && l.status === 'ABSENT');
+          return {
+            id: st.id,
+            full_name: st.full_name,
+            roll_number: st.roll_number,
+            phone_number: st.phone_number,
+            whatsapp_number: st.whatsapp_number || st.phone_number,
+            status: 'ABSENT',
+            notes: absentLog?.notes || 'Absent from class session',
+          };
+        });
+
+      return {
+        id: sess.id,
+        session_date: sess.session_date,
+        actual_start_time: sess.actual_start_time,
+        status: sess.status,
+        total_enrolled: enrolledStudents.length,
+        present_count: presentList.length,
+        absent_count: absentList.length,
+        attendance_percentage: enrolledStudents.length > 0 ? Math.round((presentList.length / enrolledStudents.length) * 100) : 0,
+        present_students: presentList,
+        absent_students: absentList,
+      };
+    });
+
+    // Build per-student stats in this batch
+    const studentStats = enrolledStudents.map((st) => {
+      const stLogs = logsByStudent.get(st.id) || [];
+      const presentCount = stLogs.filter((l) => l.status === 'PRESENT' || l.status === 'LATE' || l.status === 'EXCUSED').length;
+      const absentCount = sessions.length > 0 ? Math.max(0, sessions.length - presentCount) : 0;
+      const rate = sessions.length > 0 ? Math.round((presentCount / sessions.length) * 100) : 100;
+
+      return {
+        id: st.id,
+        full_name: st.full_name,
+        roll_number: st.roll_number,
+        phone_number: st.phone_number,
+        whatsapp_number: st.whatsapp_number || st.phone_number,
+        current_streak: st.current_streak || 0,
+        total_sessions: sessions.length,
+        present_count: presentCount,
+        absent_count: absentCount,
+        attendance_rate: rate,
+      };
+    });
+
+    const totalSessions = sessions.length;
+    const avgAttendanceRate = sessionBreakdowns.length > 0
+      ? Math.round(sessionBreakdowns.reduce((acc, s) => acc + s.attendance_percentage, 0) / sessionBreakdowns.length)
+      : 0;
+
     res.json({
       success: true,
       batch: {
@@ -258,6 +369,13 @@ export const getBatchById = async (req: Request, res: Response): Promise<void> =
         enrolled_student_count: enrolledStudents.length,
         students: enrolledStudents,
       },
+      stats: {
+        total_enrolled: enrolledStudents.length,
+        total_sessions: totalSessions,
+        avg_attendance_rate: avgAttendanceRate,
+      },
+      sessions: sessionBreakdowns,
+      students_stats: studentStats,
     });
   } catch (error: any) {
     console.error('Error fetching batch:', error);
