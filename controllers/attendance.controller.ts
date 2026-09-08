@@ -291,34 +291,61 @@ export const checkInStudent = async (req: Request, res: Response): Promise<void>
 };
 
 /**
- * Get recent attendance logs for today
+ * Get attendance logs filterable by Session Date, Batch, and Status
  */
 export const getTodayAttendanceLogs = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { date } = req.query;
+    const { date, batch_id, status } = req.query;
     const now = new Date();
-    const todayStr = (date as string) || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    
-    const targetDate = new Date(todayStr);
-    const startWindow = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0, 0);
-    const endWindow = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const selectedDateStr = (date as string) || todayStr;
 
-    const sessions = await ClassSession.findAll({
-      where: { session_date: todayStr },
-      attributes: ['id'],
+    // 1. Find sessions matching date / batch
+    const sessionWhere: any = {};
+    if (selectedDateStr !== 'ALL') {
+      sessionWhere.session_date = selectedDateStr;
+    }
+    if (batch_id && batch_id !== 'ALL') {
+      sessionWhere.batch_id = Number(batch_id);
+    }
+
+    const matchingSessions = await ClassSession.findAll({
+      where: sessionWhere,
+      attributes: ['id', 'session_date', 'batch_id', 'status'],
     });
 
-    const sessionIds = sessions.map((s) => s.id);
-    const logs = await AttendanceLog.findAll({
-      where: {
-        [Op.or]: [
-          ...(sessionIds.length > 0 ? [{ session_id: { [Op.in]: sessionIds } }] : []),
+    const sessionIds = matchingSessions.map((s) => s.id);
+
+    // Build AttendanceLog where query
+    const logWhere: any = {};
+
+    if (selectedDateStr !== 'ALL') {
+      const [y, m, d] = selectedDateStr.split('-').map(Number);
+      const startWindow = new Date(y, m - 1, d, 0, 0, 0, 0);
+      const endWindow = new Date(y, m - 1, d, 23, 59, 59, 999);
+
+      if (sessionIds.length > 0) {
+        logWhere[Op.or] = [
+          { session_id: { [Op.in]: sessionIds } },
           { scan_timestamp: { [Op.between]: [startWindow, endWindow] } },
-          { createdAt: { [Op.between]: [startWindow, endWindow] } },
-        ],
-      },
+        ];
+      } else {
+        logWhere.scan_timestamp = { [Op.between]: [startWindow, endWindow] };
+      }
+    }
+
+    if (batch_id && batch_id !== 'ALL') {
+      logWhere.batch_id = Number(batch_id);
+    }
+
+    if (status && status !== 'ALL') {
+      logWhere.status = status;
+    }
+
+    const logs = await AttendanceLog.findAll({
+      where: logWhere,
       order: [['scan_timestamp', 'DESC'], ['id', 'DESC']],
-      limit: 300,
+      limit: selectedDateStr === 'ALL' ? 2000 : 500,
       include: [
         {
           model: Student,
@@ -328,19 +355,39 @@ export const getTodayAttendanceLogs = async (req: Request, res: Response): Promi
         {
           model: Batch,
           as: 'batch',
-          attributes: ['id', 'batch_code', 'name', 'timing'],
+          attributes: ['id', 'batch_code', 'name', 'timing', 'schedule_days'],
+        },
+        {
+          model: ClassSession,
+          as: 'session',
+          attributes: ['id', 'session_date', 'status'],
         },
       ],
     });
+
+    // Fetch all available session dates from ClassSession for date filter pills
+    const allSessions = await ClassSession.findAll({
+      attributes: ['session_date'],
+      group: ['session_date'],
+      order: [['session_date', 'DESC']],
+      limit: 30,
+    });
+
+    const availableDates = allSessions.map((s) => s.session_date);
+    if (!availableDates.includes(todayStr)) {
+      availableDates.unshift(todayStr);
+    }
 
     res.json({
       success: true,
       total: logs.length,
       today_date: todayStr,
+      selected_date: selectedDateStr,
+      available_dates: availableDates,
       logs,
     });
   } catch (error: any) {
-    console.error('Error fetching today attendance:', error);
+    console.error('Error fetching attendance logs:', error);
     res.status(500).json({ success: false, message: error.message || 'Server error' });
   }
 };
