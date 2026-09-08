@@ -900,7 +900,14 @@ export const studentLogin = async (req: Request, res: Response): Promise<void> =
  */
 export const getStudentPortalDetails = async (req: Request, res: Response): Promise<void> => {
   try {
-    const studentId = (req as any).user?.studentId || (req as any).user?.userId || req.params.student_id;
+    const user = (req as any).user || {};
+    const studentId =
+      user.id ||
+      user.student_id ||
+      user.studentId ||
+      user.userId ||
+      req.params.student_id ||
+      (user.role === 'STUDENT' ? user.id : undefined);
 
     if (!studentId) {
       res.status(401).json({ success: false, message: 'Unauthorized student access.' });
