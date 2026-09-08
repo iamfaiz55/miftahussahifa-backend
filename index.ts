@@ -17,6 +17,7 @@ const app = express();
 const PORT = process.env.PORT || 5600;
 
 import { backfillAllStudentUsernames } from './controllers/student.controller.js';
+import { syncPreviousMedicosAttendance } from './scripts/syncPreviousAttendance.js';
 
 // Sync database
 const syncDatabase = async () => {
@@ -24,6 +25,7 @@ const syncDatabase = async () => {
     await sequelize.sync();
     console.log('Database synced successfully');
     await backfillAllStudentUsernames();
+    await syncPreviousMedicosAttendance();
   } catch (err) {
     console.error('Database sync/migration failed:', err);
   }
