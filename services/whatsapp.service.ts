@@ -1,150 +1,17 @@
-import pkg from 'whatsapp-web.js';
-const { Client, LocalAuth } = pkg;
+import makeWASocket, {
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
+  type WASocket,
+  type ConnectionState,
+} from '@whiskeysockets/baileys';
+import pino from 'pino';
 import qrcode from 'qrcode';
 import path from 'path';
 import fs from 'fs';
-import { execSync } from 'child_process';
 
 export type WhatsAppConnectionStatus = 'DISCONNECTED' | 'INITIALIZING' | 'SCAN_QR' | 'AUTHENTICATED' | 'READY';
-
-async function getChromeExecutablePath(): Promise<string | undefined> {
-  // 1. If running on Linux (cPanel, VPS, CloudLinux), try self-contained standalone Chromium
-  if (process.platform === 'linux') {
-    try {
-      const sparticuzModule = await import('@sparticuz/chromium' as any).catch(() => null);
-      if (sparticuzModule && (sparticuzModule.default || sparticuzModule)) {
-        const chromiumInstance = sparticuzModule.default || sparticuzModule;
-        if (typeof chromiumInstance.executablePath === 'function') {
-          const rawSparticuzPath = await chromiumInstance.executablePath();
-          if (rawSparticuzPath && fs.existsSync(rawSparticuzPath)) {
-            // On cPanel, /tmp is mounted with 'noexec' which causes EACCES.
-            // Relocate the binary and libraries to project directory where execution is permitted.
-            const rawDir = path.dirname(rawSparticuzPath);
-            const projectBinDir = path.join(process.cwd(), '.chromium_bin');
-            if (!fs.existsSync(projectBinDir)) {
-              fs.mkdirSync(projectBinDir, { recursive: true });
-            }
-
-            try {
-              const files = fs.readdirSync(rawDir);
-              for (const file of files) {
-                const src = path.join(rawDir, file);
-                const dest = path.join(projectBinDir, file);
-                if (fs.statSync(src).isFile()) {
-                  fs.copyFileSync(src, dest);
-                  fs.chmodSync(dest, 0o755);
-                }
-              }
-            } catch {}
-
-            const localBinary = path.join(projectBinDir, path.basename(rawSparticuzPath));
-            if (fs.existsSync(localBinary)) {
-              try {
-                fs.chmodSync(localBinary, 0o755);
-              } catch {}
-              process.env.LD_LIBRARY_PATH = `${projectBinDir}:${process.env.LD_LIBRARY_PATH || ''}`;
-              return localBinary;
-            }
-
-            try {
-              fs.chmodSync(rawSparticuzPath, 0o755);
-            } catch {}
-            return rawSparticuzPath;
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('[WhatsAppService] @sparticuz/chromium dynamic lookup note:', err);
-    }
-  }
-
-  // 2. Try dynamic 'which' discovery on Linux/Unix systems
-  try {
-    const whichResult = execSync('which google-chrome || which google-chrome-stable || which chromium || which chromium-browser', {
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-      .toString()
-      .trim();
-    if (whichResult && fs.existsSync(whichResult)) {
-      return whichResult;
-    }
-  } catch {}
-
-  // 3. Try known explicit filesystem paths
-  const paths = [
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/chromium',
-    '/snap/bin/chromium',
-    '/usr/local/bin/chromium',
-    '/usr/local/bin/google-chrome',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/Applications/Chromium.app/Contents/MacOS/Chromium',
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  ];
-
-  for (const p of paths) {
-    if (fs.existsSync(p)) {
-      return p;
-    }
-  }
-
-  // 4. Try Puppeteer downloaded browser cache (~/.cache/puppeteer)
-  try {
-    const homeDir = process.env.HOME || process.env.USERPROFILE || '';
-    const cacheDirs = [
-      path.join(homeDir, '.cache', 'puppeteer', 'chrome'),
-      path.join(process.cwd(), '.cache', 'puppeteer', 'chrome'),
-    ];
-
-    for (const cDir of cacheDirs) {
-      if (fs.existsSync(cDir)) {
-        const subdirs = fs.readdirSync(cDir);
-        for (const sub of subdirs) {
-          const possibleBinaries = [
-            path.join(cDir, sub, 'chrome-linux64', 'chrome'),
-            path.join(cDir, sub, 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'),
-            path.join(cDir, sub, 'chrome-mac-x64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'),
-            path.join(cDir, sub, 'chrome-win64', 'chrome.exe'),
-          ];
-          for (const bin of possibleBinaries) {
-            if (fs.existsSync(bin)) {
-              return bin;
-            }
-          }
-        }
-      }
-    }
-  } catch {}
-
-  return undefined;
-}
-
-function cleanupSingletonLocks(dataPath: string) {
-  try {
-    // Kill any lingering orphan chrome processes on this session path
-    try {
-      execSync('pkill -f "Google Chrome.*\.wwebjs_auth" || pkill -f "chromium.*\.wwebjs_auth" || true', { stdio: 'ignore' });
-    } catch {}
-
-    const sessionDir = path.join(dataPath, 'session');
-    if (fs.existsSync(sessionDir)) {
-      const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket', 'DevToolsActivePort', 'LOCK'];
-      for (const file of lockFiles) {
-        const fullPath = path.join(sessionDir, file);
-        if (fs.existsSync(fullPath)) {
-          try {
-            fs.unlinkSync(fullPath);
-          } catch {}
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('[WhatsAppService] Lock cleanup warning:', err);
-  }
-}
 
 interface WhatsAppServiceState {
   status: WhatsAppConnectionStatus;
@@ -156,8 +23,11 @@ interface WhatsAppServiceState {
   errorReason: string | null;
 }
 
+const AUTH_FOLDER = path.join(process.cwd(), '.baileys_auth');
+
 class WhatsAppService {
-  private client: any = null;
+  private sock: WASocket | null = null;
+  private isInitializing: boolean = false;
   private state: WhatsAppServiceState = {
     status: 'DISCONNECTED',
     qrCodeDataUrl: null,
@@ -169,7 +39,20 @@ class WhatsAppService {
   };
 
   constructor() {
-    // Session state initialized
+    // If previous auth session exists, attempt passive restore on startup
+    this.checkSavedSession();
+  }
+
+  private async checkSavedSession() {
+    try {
+      const credsPath = path.join(AUTH_FOLDER, 'creds.json');
+      if (fs.existsSync(credsPath)) {
+        console.log('[WhatsAppService] Found saved session in .baileys_auth, initializing...');
+        await this.initialize();
+      }
+    } catch (err) {
+      console.warn('[WhatsAppService] Session auto-restore notice:', err);
+    }
   }
 
   public getState(): WhatsAppServiceState {
@@ -177,144 +60,155 @@ class WhatsAppService {
   }
 
   public async initialize(): Promise<void> {
-    // Reset state immediately so any status fetch gets clean INITIALIZING state
+    if (this.isInitializing) {
+      console.log('[WhatsAppService] Initialization already in progress, skipping duplicate call.');
+      return;
+    }
+
+    this.isInitializing = true;
     this.state.status = 'INITIALIZING';
     this.state.errorReason = null;
     this.state.qrCodeDataUrl = null;
     this.state.qrRaw = null;
 
-    // If an existing client is running, tear it down cleanly first
-    if (this.client) {
-      console.log('[WhatsAppService] Resetting existing client before fresh initialization...');
-      try {
-        await this.client.destroy();
-      } catch (err) {
-        console.warn('[WhatsAppService] Error destroying previous client instance:', err);
-      }
-      this.client = null;
-    }
-
     try {
-      console.log('[WhatsAppService] Starting WhatsApp Web client with LocalAuth...');
-
-      const authDataPath = path.join(process.cwd(), '.wwebjs_auth');
-      cleanupSingletonLocks(authDataPath);
-
-      const chromePath = await getChromeExecutablePath();
-      if (chromePath) {
-        console.log(`[WhatsAppService] Using system Chrome/Chromium binary at: ${chromePath}`);
+      // Ensure auth directory exists
+      if (!fs.existsSync(AUTH_FOLDER)) {
+        fs.mkdirSync(AUTH_FOLDER, { recursive: true });
       }
 
-      this.client = new Client({
-        authStrategy: new LocalAuth({
-          dataPath: authDataPath,
-        }),
-        puppeteer: {
-          headless: true,
-          executablePath: chromePath,
-          args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process',
-            '--disable-gpu',
-            '--disable-software-rasterizer',
-            '--disable-extensions',
-            '--disable-default-apps',
-            '--mute-audio',
-          ],
+      // Close previous socket if any
+      if (this.sock) {
+        try {
+          this.sock.ev.removeAllListeners('connection.update');
+          this.sock.ev.removeAllListeners('creds.update');
+          this.sock.end(undefined);
+        } catch {}
+        this.sock = null;
+      }
+
+      const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
+      const logger = pino({ level: 'silent' }) as any;
+
+      let version: [number, number, number] | undefined = undefined;
+      try {
+        const vResult = await fetchLatestBaileysVersion();
+        version = vResult.version;
+      } catch {
+        // Fallback to default Baileys version
+      }
+
+      console.log('[WhatsAppService] Creating Baileys pure WebSocket connection (Zero Chromium)...');
+
+      this.sock = makeWASocket({
+        version,
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, logger),
         },
+        logger,
+        printQRInTerminal: false,
+        browser: ['Miftahussahifa OS', 'Chrome', '1.0.0'],
+        connectTimeoutMs: 60000,
+        keepAliveIntervalMs: 25000,
+        emitOwnEvents: false,
+        retryRequestDelayMs: 250,
       });
 
-      this.client.on('qr', async (qr: string) => {
-        console.log('[WhatsAppService] New QR code generated for pairing (length:', qr.length, ')');
-        this.state.status = 'SCAN_QR';
-        this.state.errorReason = null;
-        this.state.qrRaw = qr;
-        try {
-          this.state.qrCodeDataUrl = await qrcode.toDataURL(qr, {
-            margin: 2,
-            scale: 8,
-            color: {
-              dark: '#064e3b',
-              light: '#ffffff',
-            },
-          });
-        } catch (err) {
-          console.error('[WhatsAppService] Failed to generate QR data URL:', err);
-        }
-      });
+      this.sock.ev.on('creds.update', saveCreds);
 
-      this.client.on('authenticated', () => {
-        console.log('[WhatsAppService] Client authenticated successfully');
-        this.state.status = 'AUTHENTICATED';
-        this.state.errorReason = null;
-        this.state.qrCodeDataUrl = null;
-        this.state.qrRaw = null;
-      });
+      this.sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
+        const { connection, lastDisconnect, qr } = update;
 
-      this.client.on('auth_failure', (msg: string) => {
-        console.error('[WhatsAppService] Authentication failure:', msg);
-        this.state.status = 'DISCONNECTED';
-        this.state.errorReason = `Authentication failed: ${msg}`;
-        this.client = null;
-      });
-
-      this.client.on('ready', async () => {
-        console.log('[WhatsAppService] WhatsApp Web is READY and connected!');
-        this.state.status = 'READY';
-        this.state.errorReason = null;
-        this.state.lastConnectedAt = new Date();
-        this.state.qrCodeDataUrl = null;
-        this.state.qrRaw = null;
-
-        try {
-          const info = this.client.info;
-          if (info) {
-            this.state.phoneNumber = info.wid?.user || null;
-            this.state.pushName = info.pushname || 'Miftahussahifa OS';
+        if (qr) {
+          console.log('[WhatsAppService] New QR code generated for pairing');
+          this.state.status = 'SCAN_QR';
+          this.state.errorReason = null;
+          this.state.qrRaw = qr;
+          try {
+            this.state.qrCodeDataUrl = await qrcode.toDataURL(qr, {
+              margin: 2,
+              scale: 8,
+              color: {
+                dark: '#064e3b',
+                light: '#ffffff',
+              },
+            });
+          } catch (err) {
+            console.error('[WhatsAppService] Failed to generate QR data URL:', err);
           }
-        } catch (err) {
-          console.warn('[WhatsAppService] Could not retrieve client info:', err);
+        }
+
+        if (connection === 'open') {
+          console.log('[WhatsAppService] WhatsApp Web is READY and connected via WebSocket!');
+          this.state.status = 'READY';
+          this.state.errorReason = null;
+          this.state.lastConnectedAt = new Date();
+          this.state.qrCodeDataUrl = null;
+          this.state.qrRaw = null;
+
+          const rawId = this.sock?.user?.id || '';
+          this.state.phoneNumber = rawId.split(':')[0] || rawId.split('@')[0] || null;
+          this.state.pushName = this.sock?.user?.name || 'Miftahussahifa OS';
+        }
+
+        if (connection === 'close') {
+          const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
+          const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+          console.warn('[WhatsAppService] Connection closed. StatusCode:', statusCode, 'Should reconnect:', shouldReconnect);
+
+          if (statusCode === DisconnectReason.loggedOut) {
+            console.log('[WhatsAppService] User logged out from phone. Cleaning session...');
+            this.state.status = 'DISCONNECTED';
+            this.state.phoneNumber = null;
+            this.state.pushName = null;
+            this.state.qrCodeDataUrl = null;
+            this.state.qrRaw = null;
+            this.state.errorReason = 'Logged out from device.';
+            this.clearAuthFiles();
+            this.sock = null;
+          } else {
+            // Transient disconnect, will keep status or reconnect on next request
+            if (this.state.status !== 'READY') {
+              this.state.status = 'DISCONNECTED';
+            }
+          }
         }
       });
-
-      this.client.on('disconnected', (reason: string) => {
-        console.warn('[WhatsAppService] Client disconnected:', reason);
-        this.state.status = 'DISCONNECTED';
-        this.state.errorReason = `Disconnected: ${reason}`;
-        this.state.phoneNumber = null;
-        this.state.pushName = null;
-        this.client = null;
-      });
-
-      await this.client.initialize();
     } catch (error: any) {
-      console.error('[WhatsAppService] Error initializing WhatsApp client:', error);
+      console.error('[WhatsAppService] Error initializing Baileys WhatsApp client:', error);
       this.state.status = 'DISCONNECTED';
-      this.state.errorReason = error.message || 'Initialization failed';
-      this.client = null;
+      this.state.errorReason = error?.message || 'Initialization failed';
+      this.sock = null;
+    } finally {
+      this.isInitializing = false;
+    }
+  }
+
+  private clearAuthFiles() {
+    try {
+      if (fs.existsSync(AUTH_FOLDER)) {
+        fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
+      }
+    } catch (err) {
+      console.warn('[WhatsAppService] Error clearing auth files:', err);
     }
   }
 
   public async logout(): Promise<void> {
     try {
-      if (this.client) {
+      if (this.sock) {
         try {
-          await this.client.logout();
-        } catch (err) {
-          console.warn('[WhatsAppService] client.logout() notice:', err);
-        }
+          await this.sock.logout();
+        } catch {}
         try {
-          await this.client.destroy();
-        } catch (err) {
-          console.warn('[WhatsAppService] client.destroy() notice:', err);
-        }
-        this.client = null;
+          this.sock.end(undefined);
+        } catch {}
+        this.sock = null;
       }
+
+      this.clearAuthFiles();
 
       this.state.status = 'DISCONNECTED';
       this.state.errorReason = null;
@@ -323,24 +217,10 @@ class WhatsAppService {
       this.state.phoneNumber = null;
       this.state.pushName = null;
 
-      // Clean session auth cache
-      try {
-        execSync('pkill -f "Google Chrome.*\.wwebjs_auth" || true', { stdio: 'ignore' });
-      } catch {}
-
-      const authPath = path.join(process.cwd(), '.wwebjs_auth');
-      if (fs.existsSync(authPath)) {
-        try {
-          fs.rmSync(authPath, { recursive: true, force: true });
-        } catch (rmErr) {
-          console.warn('[WhatsAppService] Error clearing .wwebjs_auth directory:', rmErr);
-        }
-      }
-
-      console.log('[WhatsAppService] Successfully unlinked session, destroyed browser, and cleared session cache.');
+      console.log('[WhatsAppService] Successfully unlinked session and cleared auth credentials.');
     } catch (err: any) {
       console.error('[WhatsAppService] Logout error:', err);
-      this.client = null;
+      this.sock = null;
       this.state.status = 'DISCONNECTED';
       this.state.errorReason = null;
     }
@@ -352,10 +232,10 @@ class WhatsAppService {
    * @param messageText Formatted message text
    */
   public async sendDirectMessage(rawPhone: string, messageText: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-    if (!this.client || this.state.status !== 'READY') {
+    if (!this.sock || this.state.status !== 'READY') {
       return {
         success: false,
-        error: 'WhatsApp client is not connected. Please pair your WhatsApp device under Settings.',
+        error: 'WhatsApp client is not connected. Please pair your WhatsApp device under Settings / WhatsApp.',
       };
     }
 
@@ -371,26 +251,24 @@ class WhatsAppService {
         cleaned = '91' + cleaned;
       }
 
-      const chatId = `${cleaned}@c.us`;
+      const jid = `${cleaned}@s.whatsapp.net`;
 
-      // Attempt registration check safely
+      // Check on WhatsApp presence
       try {
-        if (typeof this.client.isRegisteredUser === 'function') {
-          const isRegistered = await this.client.isRegisteredUser(chatId);
-          if (isRegistered === false) {
-            console.warn(`[WhatsAppService] Phone number ${cleaned} is not registered on WhatsApp.`);
-            return {
-              success: false,
-              error: `Phone number ${cleaned} is not registered on WhatsApp.`,
-            };
-          }
+        const [result] = await this.sock.onWhatsApp(jid);
+        if (result && !result.exists) {
+          console.warn(`[WhatsAppService] Phone number ${cleaned} is not registered on WhatsApp.`);
+          return {
+            success: false,
+            error: `Phone number ${cleaned} is not registered on WhatsApp.`,
+          };
         }
       } catch (checkErr) {
-        console.warn('[WhatsAppService] isRegisteredUser check skipped:', checkErr);
+        // Proceed even if check fails
       }
 
-      const sentMsg = await this.client.sendMessage(chatId, messageText);
-      const msgId = sentMsg?.id?._serialized || sentMsg?.id?.id || sentMsg?.id || 'SENT_OK';
+      const sentMsg = await this.sock.sendMessage(jid, { text: messageText });
+      const msgId = sentMsg?.key?.id || 'SENT_OK';
       console.log(`[WhatsAppService] Successfully sent message to ${cleaned} (Msg ID: ${msgId})`);
 
       return {
