@@ -4,20 +4,25 @@ import qrcode from 'qrcode';
 import path from 'path';
 import fs from 'fs';
 import { execSync } from 'child_process';
-import chromium from '@sparticuz/chromium';
 
 export type WhatsAppConnectionStatus = 'DISCONNECTED' | 'INITIALIZING' | 'SCAN_QR' | 'AUTHENTICATED' | 'READY';
 
 async function getChromeExecutablePath(): Promise<string | undefined> {
-  // 1. If running on Linux (cPanel, VPS, CloudLinux), use self-contained standalone Chromium
+  // 1. If running on Linux (cPanel, VPS, CloudLinux), try self-contained standalone Chromium
   if (process.platform === 'linux') {
     try {
-      const sparticuzPath = await chromium.executablePath();
-      if (sparticuzPath && fs.existsSync(sparticuzPath)) {
-        return sparticuzPath;
+      const sparticuzModule = await import('@sparticuz/chromium' as any).catch(() => null);
+      if (sparticuzModule && (sparticuzModule.default || sparticuzModule)) {
+        const chromiumInstance = sparticuzModule.default || sparticuzModule;
+        if (typeof chromiumInstance.executablePath === 'function') {
+          const sparticuzPath = await chromiumInstance.executablePath();
+          if (sparticuzPath && fs.existsSync(sparticuzPath)) {
+            return sparticuzPath;
+          }
+        }
       }
     } catch (err) {
-      console.warn('[WhatsAppService] @sparticuz/chromium lookup note:', err);
+      console.warn('[WhatsAppService] @sparticuz/chromium dynamic lookup note:', err);
     }
   }
 
