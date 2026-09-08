@@ -35,11 +35,34 @@ function getChromeExecutablePath(): string | undefined {
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
   ];
 
-  for (const p of paths) {
-    if (fs.existsSync(p)) {
-      return p;
+  // 3. Try Puppeteer downloaded browser cache (~/.cache/puppeteer)
+  try {
+    const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+    const cacheDirs = [
+      path.join(homeDir, '.cache', 'puppeteer', 'chrome'),
+      path.join(process.cwd(), '.cache', 'puppeteer', 'chrome'),
+    ];
+
+    for (const cDir of cacheDirs) {
+      if (fs.existsSync(cDir)) {
+        const subdirs = fs.readdirSync(cDir);
+        for (const sub of subdirs) {
+          const possibleBinaries = [
+            path.join(cDir, sub, 'chrome-linux64', 'chrome'),
+            path.join(cDir, sub, 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'),
+            path.join(cDir, sub, 'chrome-mac-x64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing'),
+            path.join(cDir, sub, 'chrome-win64', 'chrome.exe'),
+          ];
+          for (const bin of possibleBinaries) {
+            if (fs.existsSync(bin)) {
+              return bin;
+            }
+          }
+        }
+      }
     }
-  }
+  } catch {}
+
   return undefined;
 }
 
