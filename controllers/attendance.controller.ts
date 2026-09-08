@@ -260,7 +260,11 @@ export const checkInStudent = async (req: Request, res: Response): Promise<void>
  */
 export const getTodayAttendanceLogs = async (req: Request, res: Response): Promise<void> => {
   try {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
     const sessions = await ClassSession.findAll({
       where: { session_date: todayStr },
       attributes: ['id'],
@@ -268,18 +272,23 @@ export const getTodayAttendanceLogs = async (req: Request, res: Response): Promi
 
     const sessionIds = sessions.map((s) => s.id);
     const logs = await AttendanceLog.findAll({
-      where: { session_id: sessionIds },
+      where: {
+        [Op.or]: [
+          ...(sessionIds.length > 0 ? [{ session_id: { [Op.in]: sessionIds } }] : []),
+          { scan_timestamp: { [Op.between]: [startOfToday, endOfToday] } },
+        ],
+      },
       order: [['scan_timestamp', 'DESC']],
       include: [
         {
           model: Student,
           as: 'student',
-          attributes: ['id', 'roll_number', 'full_name', 'phone_number'],
+          attributes: ['id', 'roll_number', 'full_name', 'phone_number', 'photo_url', 'current_streak'],
         },
         {
           model: Batch,
           as: 'batch',
-          attributes: ['id', 'batch_code', 'name'],
+          attributes: ['id', 'batch_code', 'name', 'timing'],
         },
       ],
     });
@@ -287,6 +296,7 @@ export const getTodayAttendanceLogs = async (req: Request, res: Response): Promi
     res.json({
       success: true,
       total: logs.length,
+      today_date: todayStr,
       logs,
     });
   } catch (error: any) {
