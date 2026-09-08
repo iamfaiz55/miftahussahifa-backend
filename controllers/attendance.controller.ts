@@ -300,7 +300,13 @@ export const getTodayAttendanceLogs = async (req: Request, res: Response): Promi
     const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const selectedDateStr = (date as string) || todayStr;
 
-    // 1. Find sessions matching date / batch
+    // 1. If batch_id is provided, get batch details to know its schedule_days
+    let targetBatch: any = null;
+    if (batch_id && batch_id !== 'ALL') {
+      targetBatch = await Batch.findByPk(Number(batch_id));
+    }
+
+    // 2. Find sessions matching date / batch
     const sessionWhere: any = {};
     if (selectedDateStr !== 'ALL') {
       sessionWhere.session_date = selectedDateStr;
@@ -365,24 +371,54 @@ export const getTodayAttendanceLogs = async (req: Request, res: Response): Promi
       ],
     });
 
-    // Fetch all available session dates from ClassSession for date filter pills
-    const allSessions = await ClassSession.findAll({
+    // 3. Fetch available session dates FOR THE SELECTED BATCH (or all batches if ALL)
+    const sessionDateWhere: any = {};
+    if (batch_id && batch_id !== 'ALL') {
+      sessionDateWhere.batch_id = Number(batch_id);
+    }
+
+    const batchSessions = await ClassSession.findAll({
+      where: sessionDateWhere,
       attributes: ['session_date'],
       group: ['session_date'],
       order: [['session_date', 'DESC']],
-      limit: 30,
+      limit: 200,
     });
 
-    const availableDates = allSessions.map((s) => s.session_date);
-    if (!availableDates.includes(todayStr)) {
-      availableDates.unshift(todayStr);
+    let availableDates = batchSessions.map((s) => s.session_date);
+
+    // If batch has schedule_days, strictly filter available dates to match those schedule days
+    const dayMap: { [key: number]: string } = {
+      0: 'SUN',
+      1: 'MON',
+      2: 'TUE',
+      3: 'WED',
+      4: 'THU',
+      5: 'FRI',
+      6: 'SAT',
+    };
+
+    if (targetBatch && Array.isArray(targetBatch.schedule_days) && targetBatch.schedule_days.length > 0) {
+      const allowedDays = new Set(targetBatch.schedule_days.map((d: string) => d.toUpperCase()));
+      availableDates = availableDates.filter((dateStr) => {
+        const [y, m, d] = dateStr.split('-').map(Number);
+        const dayOfWeek = new Date(y, m - 1, d).getDay();
+        const dayCode = dayMap[dayOfWeek];
+        return allowedDays.has(dayCode);
+      });
     }
+
+    // Sort available dates descending
+    availableDates.sort((a, b) => b.localeCompare(a));
 
     res.json({
       success: true,
       total: logs.length,
       today_date: todayStr,
       selected_date: selectedDateStr,
+      selected_batch_id: batch_id || 'ALL',
+      batch_schedule_days: targetBatch?.schedule_days || [],
+      batch_name: targetBatch?.name || null,
       available_dates: availableDates,
       logs,
     });
