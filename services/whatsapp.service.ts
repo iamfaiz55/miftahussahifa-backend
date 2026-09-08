@@ -15,9 +15,41 @@ async function getChromeExecutablePath(): Promise<string | undefined> {
       if (sparticuzModule && (sparticuzModule.default || sparticuzModule)) {
         const chromiumInstance = sparticuzModule.default || sparticuzModule;
         if (typeof chromiumInstance.executablePath === 'function') {
-          const sparticuzPath = await chromiumInstance.executablePath();
-          if (sparticuzPath && fs.existsSync(sparticuzPath)) {
-            return sparticuzPath;
+          const rawSparticuzPath = await chromiumInstance.executablePath();
+          if (rawSparticuzPath && fs.existsSync(rawSparticuzPath)) {
+            // On cPanel, /tmp is mounted with 'noexec' which causes EACCES.
+            // Relocate the binary and libraries to project directory where execution is permitted.
+            const rawDir = path.dirname(rawSparticuzPath);
+            const projectBinDir = path.join(process.cwd(), '.chromium_bin');
+            if (!fs.existsSync(projectBinDir)) {
+              fs.mkdirSync(projectBinDir, { recursive: true });
+            }
+
+            try {
+              const files = fs.readdirSync(rawDir);
+              for (const file of files) {
+                const src = path.join(rawDir, file);
+                const dest = path.join(projectBinDir, file);
+                if (fs.statSync(src).isFile()) {
+                  fs.copyFileSync(src, dest);
+                  fs.chmodSync(dest, 0o755);
+                }
+              }
+            } catch {}
+
+            const localBinary = path.join(projectBinDir, path.basename(rawSparticuzPath));
+            if (fs.existsSync(localBinary)) {
+              try {
+                fs.chmodSync(localBinary, 0o755);
+              } catch {}
+              process.env.LD_LIBRARY_PATH = `${projectBinDir}:${process.env.LD_LIBRARY_PATH || ''}`;
+              return localBinary;
+            }
+
+            try {
+              fs.chmodSync(rawSparticuzPath, 0o755);
+            } catch {}
+            return rawSparticuzPath;
           }
         }
       }
