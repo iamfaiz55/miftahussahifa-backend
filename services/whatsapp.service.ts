@@ -30,6 +30,8 @@ const AUTH_FOLDER = path.join(process.cwd(), '.baileys_auth');
 class WhatsAppService {
   private sock: WASocket | null = null;
   private isInitializing: boolean = false;
+  private pendingPairPhone: string | null = null;
+  private reconnectTimer: any = null;
   private state: WhatsAppServiceState = {
     status: 'DISCONNECTED',
     qrCodeDataUrl: null,
@@ -62,25 +64,33 @@ class WhatsAppService {
   }
 
   public async initialize(pairPhoneNumber?: string): Promise<void> {
+    if (pairPhoneNumber) {
+      this.pendingPairPhone = pairPhoneNumber;
+    }
+
     if (this.isInitializing) {
       console.log('[WhatsAppService] Initialization already in progress, skipping duplicate call.');
       return;
     }
 
     this.isInitializing = true;
-    this.state.status = 'INITIALIZING';
     this.state.errorReason = null;
-    this.state.qrCodeDataUrl = null;
-    this.state.qrRaw = null;
-    this.state.pairingCode = null;
+
+    if (this.state.status !== 'READY') {
+      this.state.status = 'INITIALIZING';
+    }
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
 
     try {
-      // Ensure auth directory exists
       if (!fs.existsSync(AUTH_FOLDER)) {
         fs.mkdirSync(AUTH_FOLDER, { recursive: true });
       }
 
-      // Close previous socket if any
+      // Clean up previous socket if existing
       if (this.sock) {
         try {
           this.sock.ev.removeAllListeners('connection.update');
@@ -97,12 +107,9 @@ class WhatsAppService {
       try {
         const vResult = await fetchLatestBaileysVersion();
         version = vResult.version;
-        console.log('[WhatsAppService] Fetched latest Baileys WhatsApp version:', version);
-      } catch {
-        // Fallback
-      }
+      } catch {}
 
-      console.log('[WhatsAppService] Creating Baileys socket with official Ubuntu Chrome browser profile...');
+      console.log('[WhatsAppService] Starting Baileys socket with Ubuntu Chrome profile...');
 
       this.sock = makeWASocket({
         version,
@@ -112,7 +119,6 @@ class WhatsAppService {
         },
         logger,
         printQRInTerminal: false,
-        // Use official standard OS/Browser identification to prevent handshake rejection
         browser: Browsers.ubuntu('Chrome'),
         syncFullHistory: false,
         markOnlineOnConnect: false,
@@ -126,10 +132,11 @@ class WhatsAppService {
 
       this.sock.ev.on('creds.update', saveCreds);
 
-      // Handle pairing code if requested
-      if (pairPhoneNumber && !this.sock.authState.creds.registered) {
-        let cleanPhone = pairPhoneNumber.replace(/\D/g, '');
+      // Request pairing code if requested and device not yet registered
+      if (this.pendingPairPhone && !this.sock.authState.creds.registered) {
+        let cleanPhone = this.pendingPairPhone.replace(/\D/g, '');
         if (cleanPhone.length === 10) cleanPhone = '91' + cleanPhone;
+
         setTimeout(async () => {
           try {
             if (this.sock && !this.sock.authState.creds.registered) {
@@ -141,14 +148,14 @@ class WhatsAppService {
           } catch (codeErr: any) {
             console.error('[WhatsAppService] Failed to request pairing code:', codeErr);
           }
-        }, 3000);
+        }, 1500);
       }
 
       this.sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
         const { connection, lastDisconnect, qr } = update;
 
-        if (qr) {
-          console.log('[WhatsAppService] New QR code received for pairing');
+        if (qr && !this.pendingPairPhone) {
+          console.log('[WhatsAppService] New QR code generated');
           this.state.status = 'SCAN_QR';
           this.state.errorReason = null;
           this.state.qrRaw = qr;
@@ -174,6 +181,7 @@ class WhatsAppService {
           this.state.qrCodeDataUrl = null;
           this.state.qrRaw = null;
           this.state.pairingCode = null;
+          this.pendingPairPhone = null;
 
           const rawId = this.sock?.user?.id || '';
           this.state.phoneNumber = rawId.split(':')[0] || rawId.split('@')[0] || null;
@@ -187,20 +195,26 @@ class WhatsAppService {
           console.warn('[WhatsAppService] Connection closed. StatusCode:', statusCode, 'Should reconnect:', shouldReconnect);
 
           if (statusCode === DisconnectReason.loggedOut) {
-            console.log('[WhatsAppService] User logged out from phone. Resetting session...');
+            console.log('[WhatsAppService] Logged out from phone. Resetting session...');
             this.state.status = 'DISCONNECTED';
             this.state.phoneNumber = null;
             this.state.pushName = null;
             this.state.qrCodeDataUrl = null;
             this.state.qrRaw = null;
             this.state.pairingCode = null;
+            this.pendingPairPhone = null;
             this.state.errorReason = 'Logged out from device.';
             this.clearAuthFiles();
             this.sock = null;
+          } else if (shouldReconnect) {
+            // Reconnect immediately (handles 515 RestartRequired after entering pairing code)
+            console.log('[WhatsAppService] Automatically reconnecting socket to complete handshake...');
+            this.isInitializing = false;
+            this.reconnectTimer = setTimeout(() => {
+              this.initialize();
+            }, 1000);
           } else {
-            if (this.state.status !== 'READY') {
-              this.state.status = 'DISCONNECTED';
-            }
+            this.state.status = 'DISCONNECTED';
           }
         }
       });
@@ -226,6 +240,12 @@ class WhatsAppService {
 
   public async logout(): Promise<void> {
     try {
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      this.pendingPairPhone = null;
+
       if (this.sock) {
         try {
           await this.sock.logout();
