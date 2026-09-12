@@ -537,7 +537,6 @@ export const saveBulkAttendance = async (req: Request, res: Response): Promise<v
       late: lateCount,
       absent: absentCount,
     };
-
     await session.update({ summary });
 
     res.json({
@@ -552,6 +551,155 @@ export const saveBulkAttendance = async (req: Request, res: Response): Promise<v
       success: false,
       message: error.message || 'Internal server error while saving bulk attendance.',
     });
+  }
+};
+
+/**
+ * Update attendance status for a student (e.g. from ABSENT to PRESENT) or mark a date manually
+ */
+export const updateAttendanceStatus = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { log_id, student_id, session_id, date, batch_id, status, notes } = req.body;
+
+    if (!status) {
+      res.status(400).json({ success: false, message: 'Status is required (PRESENT, ABSENT, LATE, EXCUSED).' });
+      return;
+    }
+
+    let log: any = null;
+
+    if (log_id) {
+      log = await AttendanceLog.findByPk(Number(log_id), {
+        include: [
+          { model: Student, as: 'student' },
+          { model: Batch, as: 'batch' },
+          { model: ClassSession, as: 'session' },
+        ],
+      });
+    }
+
+    // If log not found by log_id or log_id not provided, try locating by student_id & session/date
+    if (!log && student_id) {
+      const student = await Student.findByPk(Number(student_id));
+      if (!student) {
+        res.status(404).json({ success: false, message: 'Student not found.' });
+        return;
+      }
+
+      if (session_id) {
+        log = await AttendanceLog.findOne({
+          where: { student_id: Number(student_id), session_id: Number(session_id) },
+          include: [
+            { model: Student, as: 'student' },
+            { model: Batch, as: 'batch' },
+            { model: ClassSession, as: 'session' },
+          ],
+        });
+      } else if (date) {
+        const [y, m, d] = date.split('-').map(Number);
+        const startWindow = new Date(y, m - 1, d, 0, 0, 0, 0);
+        const endWindow = new Date(y, m - 1, d, 23, 59, 59, 999);
+
+        log = await AttendanceLog.findOne({
+          where: {
+            student_id: Number(student_id),
+            scan_timestamp: { [Op.between]: [startWindow, endWindow] },
+          },
+          include: [
+            { model: Student, as: 'student' },
+            { model: Batch, as: 'batch' },
+            { model: ClassSession, as: 'session' },
+          ],
+        });
+      }
+
+      // If still no log found, create one!
+      if (!log) {
+        const targetDate = date || new Date().toISOString().split('T')[0];
+        let targetBatchId = batch_id;
+        if (!targetBatchId && Array.isArray(student.enrolled_batches) && student.enrolled_batches.length > 0) {
+          targetBatchId = student.enrolled_batches[0]?.batch_id || student.enrolled_batches[0];
+        }
+
+        // Find or create session
+        let session = null;
+        if (targetBatchId) {
+          session = await ClassSession.findOne({
+            where: { batch_id: Number(targetBatchId), session_date: targetDate },
+          });
+          if (!session) {
+            session = await ClassSession.create({
+              batch_id: Number(targetBatchId),
+              session_date: targetDate,
+              actual_start_time: new Date(),
+              status: 'OPEN',
+            });
+          }
+        }
+
+        const [y, m, d] = targetDate.split('-').map(Number);
+        const scanTimestamp = new Date(y, m - 1, d, 12, 0, 0);
+
+        log = await AttendanceLog.create({
+          session_id: session?.id || null,
+          batch_id: targetBatchId ? Number(targetBatchId) : null,
+          student_id: student.id,
+          scan_timestamp: scanTimestamp,
+          status: status,
+          scan_method: 'MANUAL_OVERRIDE',
+          marked_by: (req as any).user?.id || null,
+          notes: notes || `Manually marked as ${status} by admin`,
+        });
+      }
+    }
+
+    if (!log) {
+      res.status(404).json({ success: false, message: 'Attendance record could not be found or created.' });
+      return;
+    }
+
+    const previousStatus = log.status;
+    const oldStudentId = log.student_id;
+
+    await log.update({
+      status: status,
+      scan_method: 'MANUAL_OVERRIDE',
+      marked_by: (req as any).user?.id || null,
+      notes: notes || `Status updated from ${previousStatus} to ${status} by admin`,
+    });
+
+    // Recalculate student streak based on their actual attendance logs
+    const student = await Student.findByPk(oldStudentId);
+    if (student) {
+      const allStudentLogs = await AttendanceLog.findAll({
+        where: { student_id: student.id },
+        order: [['scan_timestamp', 'DESC']],
+      });
+
+      // Calculate streak: consecutive PRESENT / LATE from most recent back
+      let calculatedStreak = 0;
+      for (const stLog of allStudentLogs) {
+        if (stLog.status === 'PRESENT' || stLog.status === 'LATE') {
+          calculatedStreak++;
+        } else if (stLog.status === 'ABSENT') {
+          break;
+        }
+      }
+
+      await student.update({
+        current_streak: calculatedStreak,
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Attendance updated to ${status} successfully!`,
+      log,
+      student_streak: student?.current_streak,
+    });
+  } catch (error: any) {
+    console.error('Error updating attendance status:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error updating attendance.' });
   }
 };
 
