@@ -703,7 +703,138 @@ export const updateAttendanceStatus = async (req: Request, res: Response): Promi
   }
 };
 
+/**
+ * Revert all unscanned (mistakenly marked bulk present) students to ABSENT for a date & batch
+ * Keeps only students who were physically scanned via QR_CAMERA or BARCODE_USB (with non-null scanned_code)
+ */
+export const revertUnscannedAttendance = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { batch_id, date } = req.body;
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    
+    // Target date is strictly the specified date (e.g. today)
+    const targetDate = (date && date !== 'ALL' && typeof date === 'string') ? date : todayStr;
 
+    const [y, m, d] = targetDate.split('-').map(Number);
+    const startWindow = new Date(y, m - 1, d, 0, 0, 0, 0);
+    const endWindow = new Date(y, m - 1, d, 23, 59, 59, 999);
 
+    // 1. Locate strictly the session(s) for THIS EXACT DATE
+    const sessionWhere: any = {
+      session_date: targetDate,
+    };
+    if (batch_id && batch_id !== 'ALL') {
+      sessionWhere.batch_id = Number(batch_id);
+    }
 
-// testing for sync 222
+    const sessions = await ClassSession.findAll({ where: sessionWhere });
+    const sessionIds = sessions.map((s) => s.id);
+
+    // 2. Strict log filter: MUST be within startWindow and endWindow (THIS DATE ONLY)
+    const logWhere: any = {
+      scan_timestamp: { [Op.between]: [startWindow, endWindow] },
+    };
+    if (sessionIds.length > 0) {
+      logWhere.session_id = { [Op.in]: sessionIds };
+    }
+    if (batch_id && batch_id !== 'ALL') {
+      logWhere.batch_id = Number(batch_id);
+    }
+
+    const allLogs = await AttendanceLog.findAll({
+      where: logWhere,
+      include: [
+        {
+          model: Student,
+          as: 'student',
+          attributes: ['id', 'roll_number', 'full_name', 'current_streak'],
+        },
+      ],
+    });
+
+    const keptScanned: any[] = [];
+    const revertedAbsent: any[] = [];
+
+    for (const log of allLogs) {
+      // Check if this log was an authentic physical scan
+      const isAuthenticScan =
+        (log.scan_method === 'QR_CAMERA' || log.scan_method === 'BARCODE_USB') &&
+        log.scanned_code !== null &&
+        log.scanned_code !== '';
+
+      if (isAuthenticScan) {
+        keptScanned.push({
+          id: log.id,
+          student_id: log.student_id,
+          name: (log as any).student?.full_name || `Student #${log.student_id}`,
+          roll_number: (log as any).student?.roll_number,
+          scan_time: log.scan_timestamp,
+          scan_method: log.scan_method,
+        });
+      } else {
+        // This was added by mistake via bulk/manual all present -> revert to ABSENT
+        await log.update({
+          status: 'ABSENT',
+          notes: 'Reverted to ABSENT (mistaken bulk present cleared - not scanned)',
+        });
+
+        // Recalculate streak for this student
+        const student = await Student.findByPk(log.student_id);
+        if (student) {
+          const studentLogs = await AttendanceLog.findAll({
+            where: { student_id: student.id },
+            order: [['scan_timestamp', 'DESC']],
+          });
+
+          let streak = 0;
+          for (const sLog of studentLogs) {
+            if (sLog.status === 'PRESENT' || sLog.status === 'LATE') {
+              streak++;
+            } else if (sLog.status === 'ABSENT') {
+              break;
+            }
+          }
+          await student.update({ current_streak: streak });
+        }
+
+        revertedAbsent.push({
+          id: log.id,
+          student_id: log.student_id,
+          name: (log as any).student?.full_name || `Student #${log.student_id}`,
+          roll_number: (log as any).student?.roll_number,
+        });
+      }
+    }
+
+    // Update session summaries
+    for (const session of sessions) {
+      const sLogs = await AttendanceLog.findAll({ where: { session_id: session.id } });
+      const presentCount = sLogs.filter((l) => l.status === 'PRESENT').length;
+      const lateCount = sLogs.filter((l) => l.status === 'LATE').length;
+      const absentCount = sLogs.filter((l) => l.status === 'ABSENT').length;
+
+      await session.update({
+        summary: {
+          total_enrolled: sLogs.length,
+          present: presentCount,
+          late: lateCount,
+          absent: absentCount,
+        },
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Attendance cleaned successfully! Retained ${keptScanned.length} physically scanned students as PRESENT, and reverted ${revertedAbsent.length} unscanned students to ABSENT.`,
+      total_scanned_retained: keptScanned.length,
+      total_reverted_to_absent: revertedAbsent.length,
+      date: targetDate,
+      kept_scanned_students: keptScanned,
+      reverted_students: revertedAbsent,
+    });
+  } catch (error: any) {
+    console.error('Error reverting unscanned attendance:', error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to revert attendance.' });
+  }
+};

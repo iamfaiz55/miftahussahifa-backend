@@ -1,5 +1,11 @@
 import { Router } from 'express';
-import { checkInStudent, getTodayAttendanceLogs, saveBulkAttendance, updateAttendanceStatus } from '../controllers/attendance.controller.js';
+import {
+  checkInStudent,
+  getTodayAttendanceLogs,
+  saveBulkAttendance,
+  updateAttendanceStatus,
+  revertUnscannedAttendance,
+} from '../controllers/attendance.controller.js';
 import { staffProtected } from '../middlewares/protected.js';
 
 const router = Router();
@@ -12,6 +18,9 @@ router.post('/', staffProtected, checkInStudent);
 router.post('/update-status', staffProtected, updateAttendanceStatus);
 router.put('/update-status', staffProtected, updateAttendanceStatus);
 router.put('/:id', staffProtected, updateAttendanceStatus);
+
+// Revert unscanned attendance (keep only physically scanned students)
+router.post('/revert-unscanned', staffProtected, revertUnscannedAttendance);
 
 // Bulk manual attendance for a batch
 router.post('/bulk-manual', staffProtected, saveBulkAttendance);
