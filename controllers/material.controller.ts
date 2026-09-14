@@ -39,11 +39,13 @@ export const getAllMaterials = async (req: Request, res: Response): Promise<void
           model: Batch,
           as: 'batch',
           attributes: ['id', 'batch_code', 'name'],
+          required: false,
         },
         {
           model: User,
           as: 'uploader',
           attributes: ['id', 'name', 'email', 'role'],
+          required: false,
         },
       ],
       order: [['created_at', 'DESC']],
@@ -113,11 +115,13 @@ export const getStudentMaterials = async (req: any, res: Response): Promise<void
           model: Batch,
           as: 'batch',
           attributes: ['id', 'batch_code', 'name'],
+          required: false,
         },
         {
           model: User,
           as: 'uploader',
           attributes: ['id', 'name', 'role'],
+          required: false,
         },
       ],
       order: [['created_at', 'DESC']],
@@ -206,11 +210,13 @@ export const createMaterial = async (req: any, res: Response): Promise<void> => 
           model: Batch,
           as: 'batch',
           attributes: ['id', 'batch_code', 'name'],
+          required: false,
         },
         {
           model: User,
           as: 'uploader',
           attributes: ['id', 'name', 'email', 'role'],
+          required: false,
         },
       ],
     });
@@ -218,7 +224,7 @@ export const createMaterial = async (req: any, res: Response): Promise<void> => 
     res.status(201).json({
       success: true,
       message: 'Course material uploaded and published successfully.',
-      material: populatedMaterial,
+      material: populatedMaterial || material,
     });
   } catch (error: any) {
     console.error('Error creating course material:', error);
@@ -283,13 +289,15 @@ export const updateMaterial = async (req: any, res: Response): Promise<void> => 
     }
 
     // Update Title if provided
-    if (title && title.trim()) {
+    if (title && typeof title === 'string' && title.trim()) {
       material.title = title.trim();
     }
 
     // Update Description if provided
     if (description !== undefined) {
-      material.description = description ? description.trim() : undefined;
+      material.description = description && typeof description === 'string' && description.trim()
+        ? description.trim()
+        : (null as any);
     }
 
     // Update File Type if explicitly passed
@@ -314,11 +322,13 @@ export const updateMaterial = async (req: any, res: Response): Promise<void> => 
           model: Batch,
           as: 'batch',
           attributes: ['id', 'batch_code', 'name'],
+          required: false,
         },
         {
           model: User,
           as: 'uploader',
           attributes: ['id', 'name', 'email', 'role'],
+          required: false,
         },
       ],
     });
@@ -326,7 +336,7 @@ export const updateMaterial = async (req: any, res: Response): Promise<void> => 
     res.json({
       success: true,
       message: 'Course material updated successfully.',
-      material: populatedMaterial,
+      material: populatedMaterial || material,
     });
   } catch (error: any) {
     console.error('Error updating course material:', error);
