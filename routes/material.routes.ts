@@ -6,6 +6,7 @@ import {
   getAllMaterials,
   getStudentMaterials,
   createMaterial,
+  updateMaterial,
   deleteMaterial,
 } from '../controllers/material.controller.js';
 import { authenticateJWT, studentProtected } from '../middlewares/protected.js';
@@ -40,6 +41,7 @@ router.get('/student', authenticateJWT, studentProtected, getStudentMaterials);
 // Faculty & Admin routes
 router.get('/', authenticateJWT, getAllMaterials);
 router.post('/', authenticateJWT, upload.single('file'), createMaterial);
+router.put('/:id', authenticateJWT, upload.single('file'), updateMaterial);
 router.delete('/:id', authenticateJWT, deleteMaterial);
 
 export default router;

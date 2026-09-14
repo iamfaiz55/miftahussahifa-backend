@@ -231,6 +231,114 @@ export const createMaterial = async (req: any, res: Response): Promise<void> => 
 };
 
 /**
+ * Update course material (Admin / Faculty) - Supports metadata updates & optional replacement file upload
+ */
+export const updateMaterial = async (req: any, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const { batch_id, title, description, file_type } = req.body;
+    const uploadedFile = req.file;
+
+    const material = await CourseMaterial.findByPk(Number(id));
+    if (!material) {
+      res.status(404).json({
+        success: false,
+        message: 'Course material not found.',
+      });
+      return;
+    }
+
+    // If new file is uploaded, remove previous local file and update file metadata
+    if (uploadedFile) {
+      if (material.file_url && material.file_url.startsWith('/uploads/')) {
+        const oldFilePath = path.join(process.cwd(), material.file_url);
+        if (fs.existsSync(oldFilePath)) {
+          try {
+            fs.unlinkSync(oldFilePath);
+          } catch (fileErr) {
+            console.error('Error removing previous material file:', fileErr);
+          }
+        }
+      }
+
+      material.file_url = `/uploads/materials/${uploadedFile.filename}`;
+
+      // File size calculation
+      const bytes = uploadedFile.size;
+      if (bytes >= 1024 * 1024) {
+        material.file_size = (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+      } else {
+        material.file_size = (bytes / 1024).toFixed(0) + ' KB';
+      }
+
+      // Auto-detect file type if not explicitly set
+      if (!file_type) {
+        const ext = path.extname(uploadedFile.originalname).toLowerCase();
+        if (ext === '.pdf') material.file_type = 'PDF';
+        else if (ext === '.doc' || ext === '.docx') material.file_type = 'DOCX';
+        else if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) material.file_type = 'WORKSHEET';
+        else if (['.mp4', '.mkv', '.webm', '.mov'].includes(ext)) material.file_type = 'VIDEO';
+        else if (['.mp3', '.wav', '.m4a', '.aac'].includes(ext)) material.file_type = 'AUDIO';
+      }
+    }
+
+    // Update Title if provided
+    if (title && title.trim()) {
+      material.title = title.trim();
+    }
+
+    // Update Description if provided
+    if (description !== undefined) {
+      material.description = description ? description.trim() : undefined;
+    }
+
+    // Update File Type if explicitly passed
+    if (file_type && ['PDF', 'DOCX', 'LINK', 'VIDEO', 'AUDIO', 'WORKSHEET'].includes(file_type)) {
+      material.file_type = file_type;
+    }
+
+    // Update Batch Assignment
+    if (batch_id !== undefined) {
+      if (!batch_id || batch_id === 'all' || batch_id === 'general' || batch_id === 'null' || isNaN(Number(batch_id))) {
+        material.batch_id = null;
+      } else {
+        material.batch_id = Number(batch_id);
+      }
+    }
+
+    await material.save();
+
+    const populatedMaterial = await CourseMaterial.findByPk(material.id, {
+      include: [
+        {
+          model: Batch,
+          as: 'batch',
+          attributes: ['id', 'batch_code', 'name'],
+        },
+        {
+          model: User,
+          as: 'uploader',
+          attributes: ['id', 'name', 'email', 'role'],
+        },
+      ],
+    });
+
+    res.json({
+      success: true,
+      message: 'Course material updated successfully.',
+      material: populatedMaterial,
+    });
+  } catch (error: any) {
+    console.error('Error updating course material:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update course material.',
+      error: error.message,
+    });
+  }
+};
+
+/**
  * Delete course material (Admin / Faculty) - Also deletes file from uploads/
  */
 export const deleteMaterial = async (req: Request, res: Response): Promise<void> => {
