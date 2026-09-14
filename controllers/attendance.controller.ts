@@ -757,18 +757,45 @@ export const revertUnscannedAttendance = async (req: Request, res: Response): Pr
     const revertedAbsent: any[] = [];
 
     for (const log of allLogs) {
-      // Check if this log was an authentic physical scan
+      // Check if this student actually scanned their barcode/QR/Roll code
       const isAuthenticScan =
-        (log.scan_method === 'QR_CAMERA' || log.scan_method === 'BARCODE_USB') &&
         log.scanned_code !== null &&
-        log.scanned_code !== '';
+        log.scanned_code !== undefined &&
+        String(log.scanned_code).trim() !== '' &&
+        log.scanned_code !== 'null';
 
       if (isAuthenticScan) {
+        // Restore/keep as PRESENT
+        await log.update({
+          status: 'PRESENT',
+          scan_method: log.scan_method === 'MANUAL_OVERRIDE' ? 'BARCODE_USB' : log.scan_method,
+          notes: 'Attended class - Verified scanned barcode',
+        });
+
+        // Ensure streak is updated
+        const student = await Student.findByPk(log.student_id);
+        if (student) {
+          const studentLogs = await AttendanceLog.findAll({
+            where: { student_id: student.id },
+            order: [['scan_timestamp', 'DESC']],
+          });
+
+          let streak = 0;
+          for (const sLog of studentLogs) {
+            if (sLog.status === 'PRESENT' || sLog.status === 'LATE') {
+              streak++;
+            } else if (sLog.status === 'ABSENT') {
+              break;
+            }
+          }
+          await student.update({ current_streak: streak });
+        }
+
         keptScanned.push({
           id: log.id,
           student_id: log.student_id,
           name: (log as any).student?.full_name || `Student #${log.student_id}`,
-          roll_number: (log as any).student?.roll_number,
+          roll_number: (log as any).student?.roll_number || log.scanned_code,
           scan_time: log.scan_timestamp,
           scan_method: log.scan_method,
         });
