@@ -254,6 +254,8 @@ export const updateMaterial = async (req: any, res: Response): Promise<void> => 
       return;
     }
 
+    const updateFields: any = {};
+
     // If new file is uploaded, remove previous local file and update file metadata
     if (uploadedFile) {
       if (material.file_url && material.file_url.startsWith('/uploads/')) {
@@ -267,56 +269,61 @@ export const updateMaterial = async (req: any, res: Response): Promise<void> => 
         }
       }
 
-      material.file_url = `/uploads/materials/${uploadedFile.filename}`;
+      updateFields.file_url = `/uploads/materials/${uploadedFile.filename}`;
 
       // File size calculation
       const bytes = uploadedFile.size;
       if (bytes >= 1024 * 1024) {
-        material.file_size = (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        updateFields.file_size = (bytes / (1024 * 1024)).toFixed(1) + ' MB';
       } else {
-        material.file_size = (bytes / 1024).toFixed(0) + ' KB';
+        updateFields.file_size = (bytes / 1024).toFixed(0) + ' KB';
       }
 
       // Auto-detect file type if not explicitly set
       if (!file_type) {
         const ext = path.extname(uploadedFile.originalname).toLowerCase();
-        if (ext === '.pdf') material.file_type = 'PDF';
-        else if (ext === '.doc' || ext === '.docx') material.file_type = 'DOCX';
-        else if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) material.file_type = 'WORKSHEET';
-        else if (['.mp4', '.mkv', '.webm', '.mov'].includes(ext)) material.file_type = 'VIDEO';
-        else if (['.mp3', '.wav', '.m4a', '.aac'].includes(ext)) material.file_type = 'AUDIO';
+        if (ext === '.pdf') updateFields.file_type = 'PDF';
+        else if (ext === '.doc' || ext === '.docx') updateFields.file_type = 'DOCX';
+        else if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) updateFields.file_type = 'WORKSHEET';
+        else if (['.mp4', '.mkv', '.webm', '.mov'].includes(ext)) updateFields.file_type = 'VIDEO';
+        else if (['.mp3', '.wav', '.m4a', '.aac'].includes(ext)) updateFields.file_type = 'AUDIO';
       }
     }
 
-    // Update Title if provided
-    if (title && typeof title === 'string' && title.trim()) {
-      material.title = title.trim();
+    // Update Title
+    if (title !== undefined) {
+      const trimmedTitle = typeof title === 'string' ? title.trim() : String(title).trim();
+      if (trimmedTitle) {
+        updateFields.title = trimmedTitle;
+      }
     }
 
-    // Update Description if provided
+    // Update Description
     if (description !== undefined) {
-      material.description = description && typeof description === 'string' && description.trim()
-        ? description.trim()
-        : (null as any);
+      const trimmedDesc = typeof description === 'string' ? description.trim() : String(description).trim();
+      updateFields.description = trimmedDesc || null;
     }
 
-    // Update File Type if explicitly passed
+    // Update File Type
     if (file_type && ['PDF', 'DOCX', 'LINK', 'VIDEO', 'AUDIO', 'WORKSHEET'].includes(file_type)) {
-      material.file_type = file_type;
+      updateFields.file_type = file_type;
     }
 
     // Update Batch Assignment
     if (batch_id !== undefined) {
       if (!batch_id || batch_id === 'all' || batch_id === 'general' || batch_id === 'null' || isNaN(Number(batch_id))) {
-        material.batch_id = null;
+        updateFields.batch_id = null;
       } else {
-        material.batch_id = Number(batch_id);
+        updateFields.batch_id = Number(batch_id);
       }
     }
 
-    await material.save();
+    // Execute direct SQL update
+    await CourseMaterial.update(updateFields, {
+      where: { id: Number(id) },
+    });
 
-    const populatedMaterial = await CourseMaterial.findByPk(material.id, {
+    const populatedMaterial = await CourseMaterial.findByPk(Number(id), {
       include: [
         {
           model: Batch,
@@ -336,7 +343,7 @@ export const updateMaterial = async (req: any, res: Response): Promise<void> => 
     res.json({
       success: true,
       message: 'Course material updated successfully.',
-      material: populatedMaterial || material,
+      material: populatedMaterial,
     });
   } catch (error: any) {
     console.error('Error updating course material:', error);
