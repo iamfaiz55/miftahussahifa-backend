@@ -429,16 +429,16 @@ export const getTodayAttendanceLogs = async (req: Request, res: Response): Promi
 };
 
 /**
- * Save manual bulk attendance for a batch session today
+ * Save manual bulk attendance for a batch session (Supports today or selected date)
  */
 export const saveBulkAttendance = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { batch_id, records } = req.body;
+    const { batch_id, records, date } = req.body;
 
     if (!batch_id || !Array.isArray(records)) {
       res.status(400).json({
         success: false,
-        message: 'batch_id and records array are required for bulk manual attendance.',
+        message: 'batch_id and records array are required for manual attendance.',
       });
       return;
     }
@@ -452,19 +452,25 @@ export const saveBulkAttendance = async (req: Request, res: Response): Promise<v
       return;
     }
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const targetDate = (date && typeof date === 'string' && date.trim() && date !== 'ALL') ? date.trim() : todayStr;
+
+    const [y, m, d] = targetDate.split('-').map(Number);
+    const sessionDateObj = new Date(y, m - 1, d, 12, 0, 0);
+
     let session = await ClassSession.findOne({
       where: {
         batch_id: batch.id,
-        session_date: todayStr,
+        session_date: targetDate,
       },
     });
 
     if (!session) {
       session = await ClassSession.create({
         batch_id: batch.id,
-        session_date: todayStr,
-        actual_start_time: new Date(),
+        session_date: targetDate,
+        actual_start_time: sessionDateObj,
         status: 'OPEN',
         summary: {
           total_enrolled: records.length,
@@ -496,29 +502,39 @@ export const saveBulkAttendance = async (req: Request, res: Response): Promise<v
           status,
           scan_method: 'MANUAL_OVERRIDE',
           marked_by: markedBy,
-          notes: 'Manual batch attendance override',
+          notes: status === 'PRESENT' ? 'Attended class - Marked present in register' : 'Marked absent in register',
         });
       } else {
         await AttendanceLog.create({
           session_id: session.id,
           batch_id: batch.id,
           student_id: studentId,
-          scan_timestamp: new Date(),
+          scan_timestamp: sessionDateObj,
           status,
           scan_method: 'MANUAL_OVERRIDE',
-          scanned_code: null,
+          scanned_code: status === 'PRESENT' ? 'MANUAL_ATTENDANCE' : null,
           marked_by: markedBy,
-          notes: 'Manual batch attendance entry',
+          notes: status === 'PRESENT' ? 'Attended class - Marked present in register' : 'Marked absent in register',
         });
       }
 
-      if (status === 'PRESENT') {
-        const student = await Student.findByPk(studentId);
-        if (student) {
-          await student.update({
-            current_streak: (student.current_streak || 0) + 1,
-          });
+      // Recalculate streak for this student accurately
+      const student = await Student.findByPk(studentId);
+      if (student) {
+        const studentLogs = await AttendanceLog.findAll({
+          where: { student_id: student.id },
+          order: [['scan_timestamp', 'DESC']],
+        });
+
+        let streak = 0;
+        for (const sLog of studentLogs) {
+          if (sLog.status === 'PRESENT' || sLog.status === 'LATE') {
+            streak++;
+          } else if (sLog.status === 'ABSENT') {
+            break;
+          }
         }
+        await student.update({ current_streak: streak });
       }
     }
 
@@ -541,15 +557,17 @@ export const saveBulkAttendance = async (req: Request, res: Response): Promise<v
 
     res.json({
       success: true,
-      message: `Manual attendance recorded successfully for batch '${batch.name}'. (${presentCount} Present, ${absentCount} Absent)`,
+      message: `Attendance recorded successfully for '${batch.name}' on ${targetDate}. (${presentCount} Present, ${absentCount} Absent)`,
       summary,
       total_updated: records.length,
+      session_id: session.id,
+      date: targetDate,
     });
   } catch (error: any) {
     console.error('Error saving bulk attendance:', error);
     res.status(500).json({
       success: false,
-      message: error.message || 'Internal server error while saving bulk attendance.',
+      message: error.message || 'Internal server error while saving manual attendance.',
     });
   }
 };
