@@ -15,25 +15,26 @@ export const checkInStudent = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    // 1. Locate student
+    // 1. Locate student by QR Token, Roll Number, Username, ID, or legacy barcode
     let student = null;
-    if (!isNaN(Number(searchTarget)) && Number(searchTarget) > 0) {
+    student = await Student.findOne({ where: { qr_token: searchTarget } });
+    if (!student) {
+      student = await Student.findOne({ where: { roll_number: searchTarget.toUpperCase() } });
+    }
+    if (!student) {
+      student = await Student.findOne({ where: { username: searchTarget.toLowerCase() } });
+    }
+    if (!student && !isNaN(Number(searchTarget)) && Number(searchTarget) > 0) {
       student = await Student.findByPk(Number(searchTarget));
     }
     if (!student) {
       student = await Student.findOne({ where: { barcode_data: searchTarget } });
     }
-    if (!student) {
-      student = await Student.findOne({ where: { roll_number: searchTarget } });
-    }
-    if (!student) {
-      student = await Student.findOne({ where: { qr_token: searchTarget } });
-    }
 
     if (!student) {
       res.status(404).json({
         success: false,
-        message: `No student found matching barcode/token '${searchTarget}'.`,
+        message: `No student found matching QR token or Roll Number '${searchTarget}'.`,
       });
       return;
     }
