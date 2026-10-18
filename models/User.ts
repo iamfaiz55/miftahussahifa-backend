@@ -10,6 +10,7 @@ class User extends Model {
   declare password_hash: string;
   declare password: string | null;
   declare mobileNumber: string | null;
+  declare gender: 'MALE' | 'FEMALE' | null;
   declare role: UserRole;
   declare assigned_batches: number[];
   declare is_active: boolean;
@@ -49,6 +50,18 @@ User.init(
     mobileNumber: {
       type: DataTypes.STRING(50),
       allowNull: true,
+    },
+    gender: {
+      type: DataTypes.STRING(20),
+      allowNull: true,
+      defaultValue: null,
+      set(val: string | null) {
+        if (!val) {
+          this.setDataValue('gender', null);
+        } else {
+          this.setDataValue('gender', val.toString().toUpperCase().trim());
+        }
+      },
     },
     role: {
       type: DataTypes.ENUM('SUPER_ADMIN', 'TEACHER', 'SCAN_OPERATOR', 'admin', 'user'),

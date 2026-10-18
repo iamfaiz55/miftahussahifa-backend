@@ -51,15 +51,24 @@ export const checkInStudent = async (req: Request, res: Response): Promise<void>
       batchesArr = [];
     }
 
-    let targetBatchId = batch_id ? Number(batch_id) : null;
-    if (!targetBatchId && batchesArr.length > 0) {
-      const activeEnrollment = batchesArr.find((b: any) => b.status === 'ACTIVE') || batchesArr[0];
-      targetBatchId = activeEnrollment?.batch_id || null;
-    }
+    // Extract all active enrolled batch IDs
+    const activeEnrolledBatchIds: number[] = Array.from(
+      new Set(
+        batchesArr
+          .filter((b: any) => b.status === 'ACTIVE' || !b.status)
+          .map((b: any) => (typeof b === 'object' ? Number(b.batch_id) : Number(b)))
+          .filter((id: number) => !isNaN(id) && id > 0)
+      )
+    );
 
-    let batch = null;
-    if (targetBatchId) {
-      batch = await Batch.findByPk(targetBatchId, {
+    // Fetch all active enrolled batches from DB with instructor
+    let enrolledBatchesList: any[] = [];
+    if (activeEnrolledBatchIds.length > 0) {
+      enrolledBatchesList = await Batch.findAll({
+        where: {
+          id: { [Op.in]: activeEnrolledBatchIds },
+          status: 'ACTIVE',
+        },
         include: [
           {
             model: User,
@@ -70,21 +79,7 @@ export const checkInStudent = async (req: Request, res: Response): Promise<void>
       });
     }
 
-    // If still no batch found, grab any available active batch or default
-    if (!batch) {
-      batch = await Batch.findOne({ where: { status: 'ACTIVE' } });
-    }
-
-    if (!batch) {
-      res.status(400).json({
-        success: false,
-        message: `Student '${student.full_name}' is not assigned to any active batch. Please enroll the student in a class first.`,
-        student,
-      });
-      return;
-    }
-
-    // 3. Verify if TODAY is a scheduled class day for this student's batch
+    // Day constants
     const dayMap: { [key: number]: string } = {
       0: 'SUN',
       1: 'MON',
@@ -117,13 +112,106 @@ export const checkInStudent = async (req: Request, res: Response): Promise<void>
     const todayDayCode = dayMap[todayIndex];
     const todayFullName = fullDayNames[todayDayCode] || 'Today';
 
+    // Find which of the student's enrolled batches are scheduled for TODAY
+    const scheduledTodayBatches = enrolledBatchesList.filter((b: any) => {
+      const days = Array.isArray(b.schedule_days) ? b.schedule_days : [];
+      return days.includes(todayDayCode);
+    });
+
+    let batch: any = null;
+    let targetBatchId = batch_id ? Number(batch_id) : null;
+
+    if (targetBatchId) {
+      // Admin/scanner requested a specific batch
+      batch = enrolledBatchesList.find((b: any) => b.id === targetBatchId) || null;
+      if (!batch) {
+        batch = await Batch.findByPk(targetBatchId, {
+          include: [
+            {
+              model: User,
+              as: 'instructor',
+              attributes: ['id', 'name', 'email'],
+            },
+          ],
+        });
+      }
+    } else {
+      // Automatic Batch Resolution:
+      if (scheduledTodayBatches.length === 1) {
+        // Exact 1 batch scheduled today (e.g. Navkhanda Saturday Ladies on Saturday)
+        batch = scheduledTodayBatches[0];
+      } else if (scheduledTodayBatches.length > 1) {
+        // Multiple batches scheduled today: pick the one not yet checked in today
+        const now = new Date();
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+        const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+        let unCheckedBatch: any = null;
+        for (const candidate of scheduledTodayBatches) {
+          const log = await AttendanceLog.findOne({
+            where: {
+              student_id: student.id,
+              batch_id: candidate.id,
+              scan_timestamp: { [Op.between]: [startOfToday, endOfToday] },
+            },
+          });
+          if (!log) {
+            unCheckedBatch = candidate;
+            break;
+          }
+        }
+        batch = unCheckedBatch || scheduledTodayBatches[0];
+      } else if (enrolledBatchesList.length > 0) {
+        // None of the student's batches are scheduled today.
+        // Pick the one with the closest upcoming class day:
+        let minDays = 8;
+        let closestBatch = enrolledBatchesList[0];
+        for (const cand of enrolledBatchesList) {
+          const days = Array.isArray(cand.schedule_days) ? cand.schedule_days : [];
+          for (const sDay of days) {
+            const targetIdx = dayIndices[sDay];
+            if (targetIdx !== undefined) {
+              let diff = (targetIdx - todayIndex + 7) % 7;
+              if (diff === 0) diff = 7;
+              if (diff < minDays) {
+                minDays = diff;
+                closestBatch = cand;
+              }
+            }
+          }
+        }
+        batch = closestBatch;
+      }
+    }
+
+    // Fallback if no enrolled batch was resolved
+    if (!batch) {
+      batch = await Batch.findOne({ where: { status: 'ACTIVE' } });
+    }
+
+    if (!batch) {
+      res.status(400).json({
+        success: false,
+        message: `Student '${student.full_name}' is not assigned to any active batch. Please enroll the student in a class first.`,
+        student,
+      });
+      return;
+    }
+
+    // 3. Verify if TODAY is a scheduled class day for this student's resolved batch
     const scheduleDays: string[] = Array.isArray(batch.schedule_days)
       ? batch.schedule_days
       : [];
 
-    const isTodayScheduled = scheduleDays.includes(todayDayCode);
+    let isTodayScheduled = scheduleDays.includes(todayDayCode);
 
-    // If student scans on a non-scheduled day, alert with days remaining until next session
+    // If student scans on a non-scheduled day, check if they have ANOTHER batch that meets today!
+    if (!isTodayScheduled && scheduledTodayBatches.length > 0 && !targetBatchId) {
+      batch = scheduledTodayBatches[0];
+      isTodayScheduled = true;
+    }
+
+    // If still not scheduled today and override is not enabled
     const allowOverride = req.body.allow_off_schedule_override === true;
     if (!isTodayScheduled && scheduleDays.length > 0 && !allowOverride) {
       let minDaysLeft = 8;
@@ -187,13 +275,16 @@ export const checkInStudent = async (req: Request, res: Response): Promise<void>
       });
     }
 
-    // 5. Check if student already checked in for today (either in this session OR anytime today)
+    // 5. Check if student already checked in for today in this session or batch
     const existingLog = await AttendanceLog.findOne({
       where: {
         student_id: student.id,
         [Op.or]: [
           { session_id: session.id },
-          { scan_timestamp: { [Op.between]: [startOfToday, endOfToday] } },
+          {
+            batch_id: batch.id,
+            scan_timestamp: { [Op.between]: [startOfToday, endOfToday] },
+          },
         ],
       },
       order: [['scan_timestamp', 'DESC']],
@@ -223,7 +314,7 @@ export const checkInStudent = async (req: Request, res: Response): Promise<void>
           success: true,
           already_checked_in: false,
           updated_from_absent: true,
-          message: `Check-in recorded! ${student.full_name} (${student.roll_number}) marked PRESENT.`,
+          message: `Check-in recorded! ${student.full_name} (${student.roll_number}) marked PRESENT in ${batch.name}.`,
           student: {
             ...student.toJSON(),
             current_streak: nextStreak,
@@ -243,7 +334,7 @@ export const checkInStudent = async (req: Request, res: Response): Promise<void>
       res.json({
         success: true,
         already_checked_in: true,
-        message: `Today's attendance is ALREADY registered for ${student.full_name} (${student.roll_number}) at ${scanTime}.`,
+        message: `Today's attendance is ALREADY registered for ${student.full_name} (${student.roll_number}) in ${batch.name} at ${scanTime}.`,
         student,
         batch,
         attendance_log: existingLog,
@@ -274,7 +365,7 @@ export const checkInStudent = async (req: Request, res: Response): Promise<void>
     res.json({
       success: true,
       already_checked_in: false,
-      message: `Check-in recorded! ${student.full_name} (${student.roll_number}) marked PRESENT.`,
+      message: `Check-in recorded! ${student.full_name} (${student.roll_number}) marked PRESENT in ${batch.name}.`,
       student: {
         ...student.toJSON(),
         current_streak: nextStreak,
@@ -296,7 +387,7 @@ export const checkInStudent = async (req: Request, res: Response): Promise<void>
  */
 export const getTodayAttendanceLogs = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { date, batch_id, status } = req.query;
+    const { date, batch_id, status, gender } = req.query;
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const selectedDateStr = (date as string) || todayStr;
@@ -349,6 +440,11 @@ export const getTodayAttendanceLogs = async (req: Request, res: Response): Promi
       logWhere.status = status;
     }
 
+    const studentWhere: any = {};
+    if (gender && gender !== 'ALL') {
+      studentWhere.gender = String(gender).toUpperCase().trim();
+    }
+
     const logs = await AttendanceLog.findAll({
       where: logWhere,
       order: [['scan_timestamp', 'DESC'], ['id', 'DESC']],
@@ -357,7 +453,8 @@ export const getTodayAttendanceLogs = async (req: Request, res: Response): Promi
         {
           model: Student,
           as: 'student',
-          attributes: ['id', 'roll_number', 'username', 'full_name', 'phone_number', 'whatsapp_number', 'current_streak'],
+          where: Object.keys(studentWhere).length > 0 ? studentWhere : undefined,
+          attributes: ['id', 'roll_number', 'username', 'full_name', 'gender', 'phone_number', 'whatsapp_number', 'current_streak'],
         },
         {
           model: Batch,

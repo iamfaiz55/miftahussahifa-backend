@@ -18,6 +18,7 @@ class Student extends Model {
   declare roll_number: string;
   declare username: string;
   declare full_name: string;
+  declare gender: 'MALE' | 'FEMALE' | null;
   declare phone_number: string;
   declare whatsapp_number: string;
   declare parent_contact: ParentContact;
@@ -57,6 +58,18 @@ Student.init(
       allowNull: false,
       set(val: string) {
         this.setDataValue('full_name', val ? val.trim() : val);
+      },
+    },
+    gender: {
+      type: DataTypes.STRING(20),
+      allowNull: true,
+      defaultValue: null,
+      set(val: string | null) {
+        if (!val) {
+          this.setDataValue('gender', null);
+        } else {
+          this.setDataValue('gender', val.toString().toUpperCase().trim());
+        }
       },
     },
     phone_number: {

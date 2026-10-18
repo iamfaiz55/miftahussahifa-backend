@@ -24,6 +24,29 @@ const syncDatabase = async () => {
   try {
     await sequelize.sync();
     console.log('Database synced successfully');
+
+    // Auto-migrate: Ensure gender column exists in students table
+    try {
+      const [studentCols]: any = await sequelize.query("SHOW COLUMNS FROM `students` LIKE 'gender'");
+      if (!studentCols || studentCols.length === 0) {
+        await sequelize.query("ALTER TABLE `students` ADD COLUMN `gender` VARCHAR(20) NULL DEFAULT NULL");
+        console.log("Successfully added 'gender' column to students table");
+      }
+    } catch (colErr: any) {
+      console.warn("Could not check/add 'gender' on students:", colErr.message);
+    }
+
+    // Auto-migrate: Ensure gender column exists in users table
+    try {
+      const [userCols]: any = await sequelize.query("SHOW COLUMNS FROM `users` LIKE 'gender'");
+      if (!userCols || userCols.length === 0) {
+        await sequelize.query("ALTER TABLE `users` ADD COLUMN `gender` VARCHAR(20) NULL DEFAULT NULL");
+        console.log("Successfully added 'gender' column to users table");
+      }
+    } catch (colErr: any) {
+      console.warn("Could not check/add 'gender' on users:", colErr.message);
+    }
+
     await backfillAllStudentUsernames();
     await syncPreviousMedicosAttendance();
   } catch (err) {

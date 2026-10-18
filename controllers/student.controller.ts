@@ -123,6 +123,7 @@ export const registerStudent = async (req: Request, res: Response): Promise<void
     const {
       name,
       full_name,
+      gender,
       mobileNumber,
       phone_number,
       whatsapp_number,
@@ -221,6 +222,7 @@ export const registerStudent = async (req: Request, res: Response): Promise<void
     const newStudent = await Student.create({
       full_name: resolvedName,
       username: finalUsername,
+      gender: gender ? String(gender).toUpperCase().trim() : null,
       phone_number: resolvedPhone,
       whatsapp_number: finalWhatsapp,
       parent_contact: finalParentContact,
@@ -355,6 +357,11 @@ export const getStudents = async (req: Request, res: Response): Promise<void> =>
       });
     }
 
+    if (req.query.gender && req.query.gender !== 'ALL') {
+      const targetGender = String(req.query.gender).toUpperCase().trim();
+      filtered = filtered.filter((s) => s.gender === targetGender);
+    }
+
     const total = await Student.count();
 
     res.json({
@@ -479,6 +486,7 @@ export const updateStudent = async (req: Request, res: Response): Promise<void> 
       name,
       full_name,
       username,
+      gender,
       phone_number,
       mobileNumber,
       whatsapp_number,
@@ -553,6 +561,7 @@ export const updateStudent = async (req: Request, res: Response): Promise<void> 
     await student.update({
       full_name: full_name || name || student.full_name,
       username: finalUsername,
+      gender: gender !== undefined ? (gender ? String(gender).toUpperCase().trim() : null) : student.gender,
       phone_number: phone_number || mobileNumber || student.phone_number,
       whatsapp_number: whatsapp_number || student.whatsapp_number,
       parent_contact: parent_contact !== undefined ? parent_contact : student.parent_contact,
