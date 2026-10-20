@@ -168,3 +168,4 @@ export const staffProtected: RequestHandler[] = [authenticateJWT, requireRole("S
 export const userProtected: RequestHandler[] = [authenticateJWT, requireRole("SUPER_ADMIN", "TEACHER", "SCAN_OPERATOR", "admin", "user")];
 export const studentProtected: RequestHandler[] = [authenticateJWT, requireRole("STUDENT", "SUPER_ADMIN", "admin")];
 export const referrerProtected: RequestHandler[] = [authenticateJWT, requireRole("REFERRER" as any, "SUPER_ADMIN", "admin")];
+export const studentViewProtected: RequestHandler[] = [authenticateJWT, requireRole("SUPER_ADMIN", "TEACHER", "SCAN_OPERATOR", "REFERRER" as any, "admin", "user")];
