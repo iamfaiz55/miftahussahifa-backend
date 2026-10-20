@@ -23,32 +23,7 @@ import { syncPreviousMedicosAttendance } from './scripts/syncPreviousAttendance.
 // Sync database
 const syncDatabase = async () => {
   try {
-    await sequelize.sync();
-    console.log('Database synced successfully');
-
-    // Auto-migrate: Ensure gender column exists in students table
-    try {
-      const [studentCols]: any = await sequelize.query("SHOW COLUMNS FROM `students` LIKE 'gender'");
-      if (!studentCols || studentCols.length === 0) {
-        await sequelize.query("ALTER TABLE `students` ADD COLUMN `gender` VARCHAR(20) NULL DEFAULT NULL");
-        console.log("Successfully added 'gender' column to students table");
-      }
-    } catch (colErr: any) {
-      console.warn("Could not check/add 'gender' on students:", colErr.message);
-    }
-
-    // Auto-migrate: Ensure gender column exists in users table
-    try {
-      const [userCols]: any = await sequelize.query("SHOW COLUMNS FROM `users` LIKE 'gender'");
-      if (!userCols || userCols.length === 0) {
-        await sequelize.query("ALTER TABLE `users` ADD COLUMN `gender` VARCHAR(20) NULL DEFAULT NULL");
-        console.log("Successfully added 'gender' column to users table");
-      }
-    } catch (colErr: any) {
-      console.warn("Could not check/add 'gender' on users:", colErr.message);
-    }
-
-    // Auto-migrate: Ensure referrers table exists
+    // 1. Auto-migrate: Ensure referrers table exists BEFORE sequelize.sync()
     try {
       await sequelize.query(`
         CREATE TABLE IF NOT EXISTS \`referrers\` (
@@ -59,8 +34,8 @@ const syncDatabase = async () => {
           \`relation_or_role\` VARCHAR(100) NULL DEFAULT NULL,
           \`is_active\` TINYINT(1) NOT NULL DEFAULT 1,
           \`notes\` TEXT NULL DEFAULT NULL,
-          \`createdAt\` DATETIME NOT NULL,
-          \`updatedAt\` DATETIME NOT NULL,
+          \`createdAt\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          \`updatedAt\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
           INDEX \`referrers_name_idx\` (\`name\`),
           INDEX \`referrers_mobile_idx\` (\`mobile_number\`),
           INDEX \`referrers_is_active_idx\` (\`is_active\`)
@@ -71,7 +46,7 @@ const syncDatabase = async () => {
       console.warn("Could not check/create 'referrers' table:", refTableErr.message);
     }
 
-    // Auto-migrate: Ensure referred_by column exists in students table
+    // 2. Auto-migrate: Ensure referred_by column exists in students table BEFORE sequelize.sync()
     try {
       const [refCols]: any = await sequelize.query("SHOW COLUMNS FROM `students` LIKE 'referred_by'");
       if (!refCols || refCols.length === 0) {
@@ -81,11 +56,37 @@ const syncDatabase = async () => {
         } catch {
           // Index might already exist
         }
-        console.log("Successfully added 'referred_by' column and index to students table");
+        console.log("Successfully added 'referred_by' column to students table");
       }
     } catch (refErr: any) {
       console.warn("Could not check/add 'referred_by' on students:", refErr.message);
     }
+
+    // 3. Auto-migrate: Ensure gender column exists in students table
+    try {
+      const [studentCols]: any = await sequelize.query("SHOW COLUMNS FROM `students` LIKE 'gender'");
+      if (!studentCols || studentCols.length === 0) {
+        await sequelize.query("ALTER TABLE `students` ADD COLUMN `gender` VARCHAR(20) NULL DEFAULT NULL");
+        console.log("Successfully added 'gender' column to students table");
+      }
+    } catch (colErr: any) {
+      console.warn("Could not check/add 'gender' on students:", colErr.message);
+    }
+
+    // 4. Auto-migrate: Ensure gender column exists in users table
+    try {
+      const [userCols]: any = await sequelize.query("SHOW COLUMNS FROM `users` LIKE 'gender'");
+      if (!userCols || userCols.length === 0) {
+        await sequelize.query("ALTER TABLE `users` ADD COLUMN `gender` VARCHAR(20) NULL DEFAULT NULL");
+        console.log("Successfully added 'gender' column to users table");
+      }
+    } catch (colErr: any) {
+      console.warn("Could not check/add 'gender' on users:", colErr.message);
+    }
+
+    // 5. Now run sequelize.sync() safely
+    await sequelize.sync();
+    console.log('Database synced successfully');
 
     await backfillAllStudentUsernames();
     await syncPreviousMedicosAttendance();

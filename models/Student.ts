@@ -184,9 +184,6 @@ Student.init(
       {
         fields: ['is_active'],
       },
-      {
-        fields: ['referred_by'],
-      },
     ],
   }
 );
