@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { Op } from 'sequelize';
 import { Referrer, Student, Batch, ClassSession, AttendanceLog } from '../models/index.js';
+import { signToken } from '../middlewares/jwt.js';
 
 /**
  * Get all referrers with aggregated stats (total referred, active, absent today)
@@ -456,3 +457,281 @@ export const getAbsentFollowups = async (req: Request, res: Response): Promise<v
     res.status(500).json({ success: false, message: error.message || 'Server error fetching followups' });
   }
 };
+
+/**
+ * 1-Step Referrer Login with Mobile Number only (no password required)
+ */
+export const referrerLogin = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { mobile_number, phone_number, phone } = req.body;
+    const inputPhone = (mobile_number || phone_number || phone || '').toString().trim();
+    const cleanDigits = inputPhone.replace(/\D/g, '');
+    const last10Digits = cleanDigits.slice(-10);
+
+    if (!cleanDigits) {
+      res.status(400).json({
+        success: false,
+        message: 'Please enter your registered mobile number.',
+      });
+      return;
+    }
+
+    // Find active referrers
+    const allReferrers = await Referrer.findAll({
+      where: { is_active: true },
+    });
+
+    const matchedReferrer = allReferrers.find((r) => {
+      const rDigits = (r.mobile_number || '').replace(/\D/g, '');
+      return (
+        (last10Digits && rDigits.endsWith(last10Digits)) ||
+        (cleanDigits && (rDigits === cleanDigits || rDigits.includes(cleanDigits)))
+      );
+    });
+
+    if (!matchedReferrer) {
+      res.status(401).json({
+        success: false,
+        message: `No active referrer found with mobile number "${inputPhone}". Please check the number or contact academy administration.`,
+      });
+      return;
+    }
+
+    // Sign JWT Token
+    const token = signToken({
+      id: matchedReferrer.id,
+      referrer_id: matchedReferrer.id,
+      role: 'REFERRER',
+      name: matchedReferrer.name,
+      email: matchedReferrer.email,
+    });
+
+    res.json({
+      success: true,
+      message: `Welcome back, ${matchedReferrer.name}!`,
+      token,
+      referrer: {
+        id: matchedReferrer.id,
+        name: matchedReferrer.name,
+        full_name: matchedReferrer.name,
+        mobile_number: matchedReferrer.mobile_number,
+        email: matchedReferrer.email,
+        relation_or_role: matchedReferrer.relation_or_role,
+        role: 'REFERRER',
+      },
+      user: {
+        id: matchedReferrer.id,
+        name: matchedReferrer.name,
+        full_name: matchedReferrer.name,
+        mobileNumber: matchedReferrer.mobile_number,
+        phone_number: matchedReferrer.mobile_number,
+        email: matchedReferrer.email,
+        role: 'REFERRER',
+        relation_or_role: matchedReferrer.relation_or_role,
+      },
+    });
+  } catch (error: any) {
+    console.error('Error during referrer login:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Server error during referrer login',
+    });
+  }
+};
+
+/**
+ * Referrer Portal Dashboard: View referred students with attendance status ("presenty") for today / selected date
+ */
+export const getReferrerPortalDashboard = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const referrerId = (req as any).user?.referrerId || (req as any).user?.id;
+    const { date } = req.query;
+    const targetDate = (date as string) || new Date().toISOString().split('T')[0];
+
+    const referrer = await Referrer.findByPk(referrerId);
+    if (!referrer) {
+      res.status(404).json({ success: false, message: 'Referrer profile not found.' });
+      return;
+    }
+
+    // Fetch all active students referred by this referrer
+    const students = await Student.findAll({
+      where: {
+        referred_by: referrer.id,
+        is_active: true,
+      },
+      attributes: [
+        'id',
+        'roll_number',
+        'username',
+        'full_name',
+        'gender',
+        'phone_number',
+        'whatsapp_number',
+        'parent_contact',
+        'regularity_score',
+        'current_streak',
+        'enrolled_batches',
+      ],
+      order: [['full_name', 'ASC']],
+    });
+
+    // Fetch batches for name lookups
+    const allBatches = await Batch.findAll({
+      attributes: ['id', 'name', 'batch_code', 'timing', 'schedule_days'],
+    });
+    const batchMap = new Map<number, any>(allBatches.map((b) => [b.id, b]));
+
+    // Find class sessions for target date
+    const sessions = await ClassSession.findAll({
+      where: { session_date: targetDate },
+      attributes: ['id', 'batch_id', 'status', 'actual_start_time'],
+    });
+    const sessionMap = new Map<number, any>(sessions.map((s) => [s.batch_id, s]));
+    const sessionIds = sessions.map((s) => s.id);
+
+    // Fetch attendance logs for these students on targetDate
+    let attendanceLogs: any[] = [];
+    if (sessionIds.length > 0 && students.length > 0) {
+      attendanceLogs = await AttendanceLog.findAll({
+        where: {
+          session_id: sessionIds,
+          student_id: students.map((s) => s.id),
+        },
+        attributes: ['id', 'session_id', 'batch_id', 'student_id', 'status', 'scan_timestamp'],
+      });
+    }
+
+    // Map student_id -> log
+    const logByStudentId = new Map<number, any>();
+    for (const log of attendanceLogs) {
+      logByStudentId.set(log.student_id, log);
+    }
+
+    // Helper to format 10-digit phone with 91 country code
+    const sanitizePhone = (p: string) => {
+      let clean = (p || '').replace(/\D/g, '');
+      if (clean.length === 10) clean = `91${clean}`;
+      return clean;
+    };
+
+    let presentCount = 0;
+    let absentCount = 0;
+    let pendingCount = 0;
+    let excusedCount = 0;
+
+    const studentList = students.map((s) => {
+      // Determine student's enrolled batches
+      let batchIds: number[] = [];
+      try {
+        if (Array.isArray(s.enrolled_batches)) {
+          batchIds = s.enrolled_batches.map((b: any) => Number(b.batch_id)).filter((id) => !isNaN(id));
+        } else if (typeof s.enrolled_batches === 'string') {
+          batchIds = JSON.parse(s.enrolled_batches || '[]').map((b: any) => Number(b.batch_id)).filter((id: any) => !isNaN(id));
+        }
+      } catch {
+        batchIds = [];
+      }
+
+      const enrolledBatchObjects = batchIds.map((id) => batchMap.get(id)).filter(Boolean);
+      const batchNames = enrolledBatchObjects.map((b) => b.name);
+      const primaryBatchName = batchNames[0] || 'General Quran Class';
+
+      // Check attendance log
+      const log = logByStudentId.get(s.id);
+      let status: 'PRESENT' | 'ABSENT' | 'LATE' | 'EXCUSED' | 'PENDING' | 'NO_SESSION' = 'PENDING';
+      let scanTime: string | null = null;
+
+      if (log) {
+        status = log.status; // 'PRESENT', 'ABSENT', 'LATE', 'EXCUSED'
+        if (log.scan_timestamp) {
+          const d = new Date(log.scan_timestamp);
+          scanTime = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+        }
+      } else {
+        // If no session exists today for student's batches
+        const hasSessionToday = batchIds.some((bId) => sessionMap.has(bId));
+        if (!hasSessionToday) {
+          status = 'NO_SESSION';
+        } else {
+          status = 'PENDING';
+        }
+      }
+
+      if (status === 'PRESENT' || status === 'LATE') presentCount++;
+      else if (status === 'ABSENT') absentCount++;
+      else if (status === 'EXCUSED') excusedCount++;
+      else pendingCount++;
+
+      // Precompose WhatsApp follow-up link for student/parent
+      const contactPhone = s.phone_number || s.parent_contact?.phone || '';
+      const cleanPhone = sanitizePhone(contactPhone);
+      const parentName = s.parent_contact?.name ? `محترم ${s.parent_contact.name}` : `محترم بھائی/بہن`;
+
+      const whatsappMessage =
+        `السلام عليكم ورحمة الله وبركاته،\n\n` +
+        `${parentName}،\n` +
+        `امید ہے آپ بخیر ہوں گے۔ میں *${referrer.name}* (مفتاح القرآن والحدیث اکیڈمی سے) عرض کر رہا ہوں۔\n\n` +
+        `آج مورخہ *${targetDate}* کو طالب علم *${s.full_name}* (Roll: ${s.roll_number}) کلاس میں غیر حاضر رہے۔\n` +
+        `کیا سب خیریت ہے؟ کلاس میں باقاعدگی برقرار رکھنا حفظ و تعلیم کے لیے نہایت ضروری ہے۔\n\n` +
+        `جزاکم اللہ خیراً،\n` +
+        `*${referrer.name}*\n` +
+        `مفتاح القرآن والحدیث اکیڈمی`;
+
+      const whatsappUrl = cleanPhone ? `https://wa.me/${cleanPhone}?text=${encodeURIComponent(whatsappMessage)}` : null;
+
+      return {
+        id: s.id,
+        roll_number: s.roll_number,
+        full_name: s.full_name,
+        gender: s.gender,
+        phone_number: s.phone_number,
+        whatsapp_number: s.whatsapp_number,
+        parent_contact: s.parent_contact,
+        regularity_score: s.regularity_score,
+        current_streak: s.current_streak,
+        batch_names: batchNames,
+        primary_batch: primaryBatchName,
+        attendance: {
+          date: targetDate,
+          status,
+          scan_time: scanTime,
+        },
+        whatsapp_url: whatsappUrl,
+        whatsapp_message: whatsappMessage,
+      };
+    });
+
+    const totalStudents = students.length;
+    const recordedAttendanceCount = presentCount + absentCount + excusedCount;
+    const overallRate = recordedAttendanceCount > 0 ? Math.round((presentCount / recordedAttendanceCount) * 100) : 100;
+
+    res.json({
+      success: true,
+      date: targetDate,
+      referrer: {
+        id: referrer.id,
+        name: referrer.name,
+        mobile_number: referrer.mobile_number,
+        email: referrer.email,
+        relation_or_role: referrer.relation_or_role,
+      },
+      summary: {
+        total_students: totalStudents,
+        present_count: presentCount,
+        absent_count: absentCount,
+        excused_count: excusedCount,
+        pending_count: pendingCount,
+        attendance_percentage: overallRate,
+      },
+      students: studentList,
+    });
+  } catch (error: any) {
+    console.error('Error fetching referrer portal dashboard:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Server error fetching referrer dashboard',
+    });
+  }
+};
+

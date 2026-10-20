@@ -2,15 +2,16 @@ import type { RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 import Student from "../models/Student.js";
+import Referrer from "../models/Referrer.js";
 
 
 import type { UserRole } from "../models/User.js";
 
-type Role = UserRole;
+type Role = UserRole | 'REFERRER';
 
 interface JWTPayload {
   id: number;
-  role: UserRole;
+  role: UserRole | 'REFERRER';
   email: string;
   iat?: number;
   exp?: number;
@@ -46,6 +47,32 @@ export const authenticateJWT: RequestHandler = async (req, res, next) => {
 
       (req as any).user = studentUser;
       (req as any).student = student;
+
+      return next();
+    }
+
+    if (decoded.role === 'REFERRER') {
+      const referrer = await Referrer.findByPk(decoded.referrer_id || decoded.id, {
+        attributes: ["id", "name", "mobile_number", "email", "relation_or_role", "is_active"],
+        raw: true,
+      });
+
+      if (!referrer) return res.status(401).json({ message: "Referrer not found or invalid token." });
+      if (referrer.is_active === false) {
+        return res.status(403).json({ message: "Your referrer account is inactive. Please contact institute administration." });
+      }
+
+      const referrerUser = {
+        id: referrer.id,
+        userId: referrer.id,
+        referrerId: referrer.id,
+        referrer_id: referrer.id,
+        role: 'REFERRER' as Role,
+        name: referrer.name,
+      };
+
+      (req as any).user = referrerUser;
+      (req as any).referrer = referrer;
 
       return next();
     }
@@ -140,3 +167,4 @@ export const teacherProtected: RequestHandler[] = [authenticateJWT, requireRole(
 export const staffProtected: RequestHandler[] = [authenticateJWT, requireRole("SUPER_ADMIN", "TEACHER", "SCAN_OPERATOR", "admin", "user")];
 export const userProtected: RequestHandler[] = [authenticateJWT, requireRole("SUPER_ADMIN", "TEACHER", "SCAN_OPERATOR", "admin", "user")];
 export const studentProtected: RequestHandler[] = [authenticateJWT, requireRole("STUDENT", "SUPER_ADMIN", "admin")];
+export const referrerProtected: RequestHandler[] = [authenticateJWT, requireRole("REFERRER" as any, "SUPER_ADMIN", "admin")];

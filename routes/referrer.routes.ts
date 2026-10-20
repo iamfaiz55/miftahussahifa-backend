@@ -6,10 +6,18 @@ import {
   updateReferrer,
   deleteReferrer,
   getAbsentFollowups,
+  referrerLogin,
+  getReferrerPortalDashboard,
 } from '../controllers/referrer.controller.js';
-import { staffProtected, teacherProtected } from '../middlewares/protected.js';
+import { staffProtected, teacherProtected, referrerProtected } from '../middlewares/protected.js';
 
 const router = Router();
+
+// Referrer 1-Step Login with Mobile Number only (No password required)
+router.post('/login', referrerLogin);
+
+// Referrer Portal Dashboard: View referred students' attendance/presenty
+router.get('/portal/dashboard', referrerProtected, getReferrerPortalDashboard);
 
 // Follow-up absentee report (Grouped by Referrer with 1-click WhatsApp deep-links)
 router.get('/followups/absent', staffProtected, getAbsentFollowups);
