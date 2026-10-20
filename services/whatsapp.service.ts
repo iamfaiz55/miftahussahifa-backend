@@ -185,7 +185,7 @@ class WhatsAppService {
 
           const rawId = this.sock?.user?.id || '';
           this.state.phoneNumber = rawId.split(':')[0] || rawId.split('@')[0] || null;
-          this.state.pushName = this.sock?.user?.name || 'Miftahussahifa OS';
+          this.state.pushName = this.sock?.user?.name || 'Miftahul Quran Wal Hadees OS';
         }
 
         if (connection === 'close') {

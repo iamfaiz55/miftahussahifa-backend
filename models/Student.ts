@@ -28,6 +28,7 @@ class Student extends Model {
   declare regularity_score: number;
   declare current_streak: number;
   declare is_active: boolean;
+  declare referred_by: number | null;
 
   declare readonly createdAt: Date;
   declare readonly updatedAt: Date;
@@ -146,6 +147,15 @@ Student.init(
       allowNull: false,
       defaultValue: true,
     },
+    referred_by: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: null,
+      references: {
+        model: 'referrers',
+        key: 'id',
+      },
+    },
   },
   {
     sequelize,
@@ -173,6 +183,9 @@ Student.init(
       },
       {
         fields: ['is_active'],
+      },
+      {
+        fields: ['referred_by'],
       },
     ],
   }

@@ -279,7 +279,7 @@ Your attendance for today was recorded as absent. If you require lesson notes, r
 We look forward to seeing you at your next scheduled class on *${nextDayName}*!
 
 جَزَاكُمُ اللهُ خَيْرًا
-*Miftahussahifa Arabic Academy*`;
+*Miftahul Quran Wal Hadees Academy*`;
 
           // Send message via WhatsApp
           const sendRes = await whatsappService.sendDirectMessage(studentPhone, messageText);

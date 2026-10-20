@@ -68,7 +68,7 @@ export const sendTestMessage = async (req: Request, res: Response): Promise<void
 
     const text =
       message ||
-      `السَّلاَمُ عَلَيْكُمْ وَرَحْمَةُ اللهِ وَبَرَكَاتُهُ\n\nThis is a test notification from *Miftahussahifa Arabic Academy OS*.\nYour WhatsApp connection is active and working properly! ✨`;
+      `السَّلاَمُ عَلَيْكُمْ وَرَحْمَةُ اللهِ وَبَرَكَاتُهُ\n\nThis is a test notification from *Miftahul Quran Wal Hadees Academy OS*.\nYour WhatsApp connection is active and working properly! ✨`;
 
     const result = await whatsappService.sendDirectMessage(phone, text);
 

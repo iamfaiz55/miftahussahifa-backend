@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import crypto from 'node:crypto';
 import { Op } from 'sequelize';
 import sequelize from '../utils/db.js';
-import { Student, Batch, User, ClassSession, AttendanceLog } from '../models/index.js';
+import { Student, Batch, User, ClassSession, AttendanceLog, Referrer } from '../models/index.js';
 import { signToken } from '../middlewares/jwt.js';
 
 /**
@@ -134,6 +134,7 @@ export const registerStudent = async (req: Request, res: Response): Promise<void
       barcode_data: customBarcode,
       roll_number: customRoll,
       username: customUsername,
+      referred_by,
     } = req.body;
 
     // Validate required fields
@@ -219,6 +220,14 @@ export const registerStudent = async (req: Request, res: Response): Promise<void
       relation: parent_contact?.relation || '',
     };
 
+    let resolvedReferredBy: number | null = null;
+    if (referred_by) {
+      const parsedRefId = Number(referred_by);
+      if (!isNaN(parsedRefId) && parsedRefId > 0) {
+        resolvedReferredBy = parsedRefId;
+      }
+    }
+
     const newStudent = await Student.create({
       full_name: resolvedName,
       username: finalUsername,
@@ -233,6 +242,7 @@ export const registerStudent = async (req: Request, res: Response): Promise<void
       regularity_score: 100.0,
       current_streak: 0,
       is_active: true,
+      referred_by: resolvedReferredBy,
     });
 
     res.status(201).json({
@@ -313,7 +323,7 @@ export const enrollStudentInBatch = async (req: Request, res: Response): Promise
  */
 export const getStudents = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { search, batch_id, class_id, is_active } = req.query;
+    const { search, batch_id, class_id, is_active, referrer_id } = req.query;
 
     const whereClause: any = {};
 
@@ -321,8 +331,22 @@ export const getStudents = async (req: Request, res: Response): Promise<void> =>
       whereClause.is_active = is_active === 'true';
     }
 
+    if (referrer_id) {
+      const parsedRefId = Number(referrer_id);
+      if (!isNaN(parsedRefId) && parsedRefId > 0) {
+        whereClause.referred_by = parsedRefId;
+      }
+    }
+
     const students = await Student.findAll({
       where: whereClause,
+      include: [
+        {
+          model: Referrer,
+          as: 'referrer',
+          attributes: ['id', 'name', 'mobile_number', 'email', 'relation_or_role'],
+        },
+      ],
       order: [['id', 'DESC']],
     });
 
@@ -330,12 +354,13 @@ export const getStudents = async (req: Request, res: Response): Promise<void> =>
     if (search) {
       const q = String(search).toLowerCase();
       filtered = students.filter(
-        (s) =>
+        (s: any) =>
           s.full_name?.toLowerCase().includes(q) ||
           s.username?.toLowerCase().includes(q) ||
           s.roll_number?.toLowerCase().includes(q) ||
           s.phone_number?.toLowerCase().includes(q) ||
-          s.barcode_data?.toLowerCase().includes(q)
+          s.barcode_data?.toLowerCase().includes(q) ||
+          (s.referrer?.name && s.referrer.name.toLowerCase().includes(q))
       );
     }
 
@@ -401,6 +426,13 @@ export const getStudentByIdentifier = async (req: Request, res: Response): Promi
           { qr_token: cleanIdentifier },
         ],
       },
+      include: [
+        {
+          model: Referrer,
+          as: 'referrer',
+          attributes: ['id', 'name', 'mobile_number', 'email', 'relation_or_role'],
+        },
+      ],
     });
 
     if (!student) {
@@ -496,6 +528,7 @@ export const updateStudent = async (req: Request, res: Response): Promise<void> 
       class_id,
       batch_id,
       is_active,
+      referred_by,
     } = req.body;
 
     let updatedEnrolledBatches = student.enrolled_batches;
@@ -558,6 +591,16 @@ export const updateStudent = async (req: Request, res: Response): Promise<void> 
       finalUsername = await generateUniqueStudentUsername(full_name || student.full_name, phone_number || student.phone_number, student.id);
     }
 
+    let finalReferredBy = student.referred_by;
+    if (referred_by !== undefined) {
+      if (referred_by === null || referred_by === '' || Number(referred_by) === 0) {
+        finalReferredBy = null;
+      } else {
+        const parsed = Number(referred_by);
+        finalReferredBy = isNaN(parsed) ? null : parsed;
+      }
+    }
+
     await student.update({
       full_name: full_name || name || student.full_name,
       username: finalUsername,
@@ -567,12 +610,23 @@ export const updateStudent = async (req: Request, res: Response): Promise<void> 
       parent_contact: parent_contact !== undefined ? parent_contact : student.parent_contact,
       enrolled_batches: updatedEnrolledBatches,
       is_active: is_active !== undefined ? is_active : student.is_active,
+      referred_by: finalReferredBy,
+    });
+
+    const refreshedStudent = await Student.findByPk(student.id, {
+      include: [
+        {
+          model: Referrer,
+          as: 'referrer',
+          attributes: ['id', 'name', 'mobile_number', 'email', 'relation_or_role'],
+        },
+      ],
     });
 
     res.json({
       success: true,
       message: 'Student updated successfully.',
-      student,
+      student: refreshedStudent || student,
     });
   } catch (error: any) {
     console.error('Error updating student:', error);
